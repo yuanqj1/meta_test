@@ -537,6 +537,7 @@ AC_CONFIG_FILES([Makefile
 		 src/scrontab/Makefile
 		 src/sdiag/Makefile
 		 src/sinfo/Makefile
+		 src/slurmbrokerd/Makefile
 		 src/slurmctld/Makefile
 		 src/slurmd/Makefile
 		 src/slurmd/common/Makefile

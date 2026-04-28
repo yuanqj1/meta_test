@@ -1,0 +1,67 @@
+---
+description: Slurm-based brokerd 守护进程二次开发的全局约束（架构、内存、通讯、并发、日志、风格）
+alwaysApply: true
+---
+
+# Slurm-based Daemon Development (brokerd)
+
+本规则适用于在当前 Slurm 代码库中开发 `brokerd` 守护进程及其相关代码。
+
+## 1. 架构与命名规范
+
+- **组件定位**: `brokerd` 是独立守护进程，整体结构与生命周期参考 `src/slurmd/` 与 `src/slurmrestd/`。
+- **目录结构**:
+    - 核心逻辑放在 `src/brokerd/`
+    - 跨组件复用的协议/数据结构放在 `src/common/`
+- **命名空间**: 全局函数遵循 Slurm 风格，使用小写下划线（`snake_case`）与模块前缀（如 `brokerd_xxx_yyy()`），不要使用驼峰命名。
+
+## 2. 内存与数据结构（Slurm Native）
+
+- **严格禁止** 直接使用 `malloc` / `free` / `realloc` / `strdup`。
+- **必须使用**:
+    - 内存分配：`xmalloc()`、`xfree()`、`xstrdup()`、`xrealloc()`
+    - 链表：使用 `src/common/list.h` 的 `List` 与 `ListIterator` 进行遍历
+    - 字符串拼接/查找：优先使用 `xstrfmtcat()`、`xstrchr()`/`xstrchrp()` 等 `xstring` 系列
+
+```c
+// ❌ BAD
+char *buf = malloc(64);
+sprintf(buf, "node=%s", name);
+
+// ✅ GOOD
+char *buf = NULL;
+xstrfmtcat(buf, "node=%s", name);
+/* ... use buf ... */
+xfree(buf);
+```
+
+## 3. 通讯与协议（Networking）
+
+- **非阻塞 IO**: 优先复用 Slurm 的 `eio`（Event IO）框架；若不适用，至少使用 `poll()` 等多路复用，禁止在 IO 上长时间阻塞工作线程。
+- **协议消息**: 复用 `slurm_msg_t` 与 `slurm_pack_*` / `slurm_unpack_*` 接口进行序列化，不要自行手搓字节流。
+
+## 4. 并发与同步（Locking）
+
+- **锁机制**: 使用 `slurm_mutex_lock()` / `slurm_mutex_unlock()`、`slurm_rwlock_*` 系列；禁止裸用 `pthread_mutex_*`。
+- **加锁顺序**: 涉及多把锁时，遵循 Slurm 既有加锁顺序（参考 `src/slurmctld/locks.h` 中的约定），避免环形等待。
+- **线程模型**: `brokerd` 必须线程安全，每个请求在独立 `pthread` 或线程池中处理；共享状态访问必须持锁。
+
+## 5. 日志与错误码
+
+- **日志接口**: 使用 `info()`、`debug()`、`debug2()`、`debug3()`、`error()`、`fatal()`，禁止 `printf` / `fprintf(stderr, ...)`。
+- **返回约定**: 函数失败返回 `SLURM_ERROR` 并设置 `errno`；成功返回 `SLURM_SUCCESS`。
+
+```c
+// ✅ GOOD
+if (ret < 0) {
+    error("%s: failed to bind socket: %m", __func__);
+    return SLURM_ERROR;
+}
+return SLURM_SUCCESS;
+```
+
+## 6. 代码风格
+
+- **缩进**: 8 字符 Tab，与 Slurm 主干保持一致；不要混用空格缩进。
+- **大括号**: K&R 风格，函数定义的左大括号单独成行，控制语句的左大括号紧跟在行尾。
+- **头文件**: 新模块需提供成对的 `*.h` / `*.c`，头文件加 `#ifndef` 保护宏，命名形如 `_BROKERD_<MODULE>_H`。

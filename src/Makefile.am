@@ -18,6 +18,7 @@ SUBDIRS =		\
 	scrontab	\
 	sdiag		\
 	sinfo		\
+	slurmbrokerd	\
 	slurmctld	\
 	slurmd		\
 	slurmdbd	\
