@@ -6,13 +6,35 @@
  *  See doc/Broker开发任务清单.md     for module / task breakdown.
  *
  *  M01-T1 : skeleton only - compiles, links, returns 0.
- *  M01-T2~T7 will fill in CLI parsing, logging, signals, main loop,
- *  init/fini orchestration and systemd integration.
+ *  M01-T2 : command line parsing (-D / -f / -v / -h / -V).
+ *  M01-T3 : logging via log_init() with verbose level mapping.
+ *  M01-T4 : signal handling (SIGTERM/SIGINT/SIGHUP/SIGPIPE).
+ *  M01-T5 : main loop polls g_shutdown_requested with sleep(1).
+ *  M01-T6 : broker_init() / broker_fini() central orchestration.
+ *  M01-T7 : systemd unit (etc/slurmbrokerd.service.in) is installed
+ *           via etc/Makefile.am's WITH_SYSTEMD_UNITS path - no work
+ *           is required in this file.
 \*****************************************************************************/
 
-#include <stddef.h>
+#include "config.h"
+
+#include <getopt.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+#include "slurm/slurm.h"
+
+#include "src/common/daemonize.h"
+#include "src/common/log.h"
+#include "src/common/proc_args.h"
+#include "src/common/xmalloc.h"
+#include "src/common/xstring.h"
 
 #include "slurmbrokerd.h"
+
+#define DEFAULT_BROKER_CONF_PATH "/etc/slurm/broker.conf"
+#define DEFAULT_BROKER_PIDFILE "/run/slurmbrokerd/slurmbrokerd.pid"
 
 /*
  * Globals declared in slurmbrokerd.h. Defined here exactly once.
@@ -25,35 +47,298 @@ broker_argv_opts_t g_argv_opts = {
 	.verbose = 0,
 };
 
-int broker_init(void)
+static void _usage(void)
 {
-	/* TODO M02-T3: broker_conf_init(g_argv_opts.conf_path); */
-	/* TODO M02-T4: user_mapping_load(...);                  */
-	/* TODO M03-T6: broker_state_restore();                  */
-	/* TODO M04-T2: proto_init();                            */
-	/* TODO M08-T1: egress_init();                           */
-	/* TODO M09-T1: state_machine_start();                   */
-	/* TODO M10-T1: stage_pool_start();                      */
-	/* TODO M13-T1: sync_ticker_start();                     */
-	/* TODO M05-T1: listener_start();                        */
-	return 0;
+	fprintf(stderr,
+		"Usage: slurmbrokerd [OPTIONS]\n"
+		"\n"
+		"Slurm cross-domain broker daemon (MVP).\n"
+		"\n"
+		"Options:\n"
+		"  -D                Run in foreground; log to stderr.\n"
+		"  -f <path>         Path to broker.conf (default: %s).\n"
+		"  -v                Increase verbosity (repeat: -vv, -vvv).\n"
+		"  -h, --help        Show this help and exit.\n"
+		"  -V, --version     Show version and exit.\n"
+		"\n"
+		"Signals:\n"
+		"  SIGTERM, SIGINT   Graceful shutdown.\n"
+		"  SIGHUP            Reload user mapping (TODO M02-T4).\n",
+		DEFAULT_BROKER_CONF_PATH);
 }
 
+static void _parse_commandline(int argc, char **argv)
+{
+	static const struct option long_options[] = {
+		{ "help",    no_argument, NULL, 'h' },
+		{ "version", no_argument, NULL, 'V' },
+		{ NULL,      0,           NULL, 0   },
+	};
+	int c;
+	int option_index = 0;
+
+	if (!g_argv_opts.conf_path)
+		g_argv_opts.conf_path = xstrdup(DEFAULT_BROKER_CONF_PATH);
+
+	/*
+	 * Suppress getopt's own diagnostics so that all error reporting
+	 * is funneled through _usage() for a uniform UX.
+	 */
+	opterr = 0;
+
+	while ((c = getopt_long(argc, argv, "Df:hVv",
+				long_options, &option_index)) != -1) {
+		switch (c) {
+		case 'D':
+			g_argv_opts.foreground = true;
+			break;
+		case 'f':
+			xfree(g_argv_opts.conf_path);
+			g_argv_opts.conf_path = xstrdup(optarg);
+			break;
+		case 'v':
+			g_argv_opts.verbose++;
+			break;
+		case 'h':
+			_usage();
+			exit(0);
+		case 'V':
+			print_slurm_version();
+			exit(0);
+		default:
+			if (optopt)
+				fprintf(stderr,
+					"slurmbrokerd: invalid option -- '%c'\n",
+					optopt);
+			_usage();
+			exit(1);
+		}
+	}
+
+	if (optind < argc) {
+		fprintf(stderr,
+			"slurmbrokerd: unexpected positional argument: '%s'\n",
+			argv[optind]);
+		_usage();
+		exit(1);
+	}
+}
+
+/*
+ * _setup_logging - initialise the Slurm log subsystem according to the
+ * command line options parsed in _parse_commandline().
+ *
+ * Verbose level mapping (matches slurmrestd):
+ *   default        -> LOG_LEVEL_INFO
+ *   -v             -> LOG_LEVEL_VERBOSE
+ *   -vv            -> LOG_LEVEL_DEBUG
+ *   -vvv           -> LOG_LEVEL_DEBUG2
+ *   -vvvv          -> LOG_LEVEL_DEBUG3
+ *   -vvvvv         -> LOG_LEVEL_DEBUG4
+ *   -vvvvvv (or more) -> LOG_LEVEL_DEBUG5  (clamped to LOG_LEVEL_END - 1)
+ *
+ * Foreground mode (-D): log to stderr only, facility USER.
+ * Daemon mode        : log to syslog only, facility DAEMON.
+ */
+static void _setup_logging(int argc, char **argv)
+{
+	log_options_t logopt;
+	log_facility_t fac;
+	int level = LOG_LEVEL_INFO + g_argv_opts.verbose;
+
+	if (level >= LOG_LEVEL_END)
+		level = LOG_LEVEL_END - 1;
+
+	if (g_argv_opts.foreground) {
+		logopt = (log_options_t) LOG_OPTS_STDERR_ONLY;
+		logopt.stderr_level = level;
+		fac = SYSLOG_FACILITY_USER;
+	} else {
+		logopt = (log_options_t) LOG_OPTS_INITIALIZER;
+		logopt.stderr_level = LOG_LEVEL_QUIET;
+		logopt.logfile_level = LOG_LEVEL_QUIET;
+		logopt.syslog_level = level;
+		fac = SYSLOG_FACILITY_DAEMON;
+	}
+
+	if (log_init(xbasename(argv[0]), logopt, fac, NULL))
+		fatal("Unable to setup logging: %m");
+}
+
+/*
+ * Async-signal-safe handlers.
+ *
+ * They MUST NOT call non-async-signal-safe functions (no info()/error()/
+ * malloc/free/etc.). They only flip a flag that the main loop polls.
+ */
+static void _shutdown_handler(int sig)
+{
+	(void) sig;
+	g_shutdown_requested = 1;
+}
+
+static void _sighup_handler(int sig)
+{
+	(void) sig;
+	g_sighup_requested = 1;
+}
+
+/*
+ * _install_signal_handlers - install daemon-wide signal handlers.
+ *
+ * SIGTERM / SIGINT  -> request graceful shutdown.
+ * SIGHUP            -> request user_mapping reload (M02-T4 wires the body).
+ * SIGPIPE           -> ignored: we treat short writes as regular EPIPE
+ *                      from send()/write() return values instead.
+ *
+ * SA_RESTART is intentionally NOT set, so blocking syscalls (sleep, poll,
+ * accept, recv, ...) return -1/EINTR on signal. The main loop checks
+ * g_shutdown_requested right after, which gives us the "<= 5s shutdown"
+ * latency required by the M01-T4 DoD.
+ */
+static void _install_signal_handlers(void)
+{
+	struct sigaction sa = { 0 };
+
+	if (sigemptyset(&sa.sa_mask))
+		fatal("%s: sigemptyset failed: %m", __func__);
+	sa.sa_flags = 0;
+
+	sa.sa_handler = _shutdown_handler;
+	if (sigaction(SIGTERM, &sa, NULL))
+		fatal("%s: sigaction(SIGTERM) failed: %m", __func__);
+	if (sigaction(SIGINT, &sa, NULL))
+		fatal("%s: sigaction(SIGINT) failed: %m", __func__);
+
+	sa.sa_handler = _sighup_handler;
+	if (sigaction(SIGHUP, &sa, NULL))
+		fatal("%s: sigaction(SIGHUP) failed: %m", __func__);
+
+	sa.sa_handler = SIG_IGN;
+	if (sigaction(SIGPIPE, &sa, NULL))
+		fatal("%s: sigaction(SIGPIPE) failed: %m", __func__);
+}
+
+/*
+ * broker_init - bring up every sub-module in deterministic order.
+ *
+ * The order mirrors the runtime data flow:
+ *   conf -> persistent state -> RPC layer -> egress / state-machine /
+ *   stage / sync-ticker -> finally the listener that opens the
+ *   front door to ctld and remote brokers.
+ *
+ * Each sub-module has its own task (M02..M13). Until those land, the
+ * body here is intentionally a list of TODOs so the wiring is easy
+ * to spot during review.
+ *
+ * Returns SLURM_SUCCESS on success, SLURM_ERROR on any sub-module
+ * init failure. On failure the caller must still invoke broker_fini()
+ * to release whatever was already brought up.
+ */
+int broker_init(void)
+{
+	/* TODO M02-T3: if (broker_conf_init(g_argv_opts.conf_path))   */
+	/*                  return SLURM_ERROR;                         */
+	/* TODO M02-T4: user_mapping_load(...);                         */
+	/* TODO M03-T6: broker_state_restore();                         */
+	/* TODO M04-T2: proto_init();                                   */
+	/* TODO M08-T1: egress_init();                                  */
+	/* TODO M09-T1: state_machine_start();                          */
+	/* TODO M10-T1: stage_pool_start();                             */
+	/* TODO M13-T1: sync_ticker_start();                            */
+	/* TODO M05-T1: listener_start();                               */
+
+	debug("broker_init: skeleton ready (no sub-modules wired yet)");
+	return SLURM_SUCCESS;
+}
+
+/*
+ * broker_fini - reverse of broker_init.
+ *
+ * Must be safe to call after a partially failed broker_init(): each
+ * sub-module's *_fini()/*_stop() should be a no-op when its *_init()
+ * was never called.
+ */
 void broker_fini(void)
 {
-	/* TODO: tear down sub-modules in reverse order. */
+	/* TODO M05-T1: listener_stop();                                */
+	/* TODO M13-T1: sync_ticker_stop();                             */
+	/* TODO M10-T1: stage_pool_stop();                              */
+	/* TODO M09-T1: state_machine_stop();                           */
+	/* TODO M08-T1: egress_fini();                                  */
+	/* TODO M04-T2: proto_fini();                                   */
+	/* TODO M02-T4: user_mapping_destroy_all();                     */
+	/* TODO M02-T3: broker_conf_fini();                             */
+
+	xfree(g_argv_opts.conf_path);
 }
 
 int main(int argc, char **argv)
 {
-	(void) argc;
-	(void) argv;
+	int pidfd = -1;
+	int rc;
 
-	/* TODO M01-T2: _parse_commandline(argc, argv);    */
-	/* TODO M01-T3: _setup_logging();                  */
-	/* TODO M01-T4: _install_signal_handlers();        */
-	/* TODO M01-T5: main loop until g_shutdown_requested */
-	/* TODO M01-T6: broker_init() / broker_fini()      */
+	_parse_commandline(argc, argv);
+	_setup_logging(argc, argv);
+	_install_signal_handlers();
 
+	if (!g_argv_opts.foreground) {
+		if (xdaemon())
+			fatal("Couldn't daemonize slurmbrokerd: %m");
+		pidfd = create_pidfile(DEFAULT_BROKER_PIDFILE, 0);
+		if (pidfd < 0)
+			fatal("Unable to create pidfile `%s'",
+			      DEFAULT_BROKER_PIDFILE);
+	}
+	test_core_limit();
+
+	info("slurmbrokerd %s starting", SLURM_VERSION_STRING);
+
+	if ((rc = broker_init()) != SLURM_SUCCESS) {
+		error("broker_init failed (rc=%d), aborting", rc);
+		broker_fini();
+		if (pidfd >= 0 && unlink(DEFAULT_BROKER_PIDFILE) < 0)
+			error("Unable to remove pidfile `%s': %m",
+			      DEFAULT_BROKER_PIDFILE);
+		if (pidfd >= 0)
+			(void) close(pidfd);
+		log_fini();
+		return 1;
+	}
+
+	/*
+	 * MVP main loop: poll g_shutdown_requested with a 1-second tick.
+	 *
+	 * The listener (M05-T1) and other workers will run in their own
+	 * threads, so this thread has nothing to do but wait for a signal.
+	 * Because SA_RESTART is not set on our handlers, blocking syscalls
+	 * such as poll()/accept()/recv() return with EINTR on signal. The
+	 * current sleep(1) loop also wakes early on signal delivery, keeping
+	 * shutdown latency below the 5s M01-T4 target.
+	 */
+	while (!g_shutdown_requested) {
+		if (g_sighup_requested) {
+			g_sighup_requested = 0;
+			/* TODO M02-T4: user_mapping reload here. */
+			info("SIGHUP received: user_mapping reload pending (TODO M02-T4)");
+		}
+		sleep(1);
+	}
+
+	info("graceful shutdown initiated");
+
+	/* TODO M03-T6: broker_state_save();  flush JSONL before exit. */
+
+	if (pidfd >= 0 && unlink(DEFAULT_BROKER_PIDFILE) < 0)
+		error("Unable to remove pidfile `%s': %m",
+		      DEFAULT_BROKER_PIDFILE);
+
+	broker_fini();
+
+	if (pidfd >= 0)
+		(void) close(pidfd);
+
+	info("slurmbrokerd shutdown complete");
+	log_fini();
 	return 0;
 }

@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "C/C++ Runner: Debug Session",
+      "type": "lldb",
+      "request": "launch",
+      "args": [],
+      "cwd": "/Volumes/yuanhao/sugon/版本/3.4/代码/metastack_test/src/slurmbrokerd",
+      "program": "/Volumes/yuanhao/sugon/版本/3.4/代码/metastack_test/src/slurmbrokerd/build/Debug/outDebug"
+    }
+  ]
+}
