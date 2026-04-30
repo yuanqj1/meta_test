@@ -13,7 +13,9 @@ AM_CPPFLAGS = -I$(top_srcdir)
 sbin_PROGRAMS = slurmbrokerd
 
 slurmbrokerd_SOURCES = \
-	slurmbrokerd.c slurmbrokerd.h
+	slurmbrokerd.c slurmbrokerd.h \
+	broker_conf.c broker_conf.h \
+	user_mapping.c user_mapping.h
 
 slurmbrokerd_DEPENDENCIES = $(LIB_SLURM_BUILD)
 slurmbrokerd_LDFLAGS = $(CMD_LDFLAGS)

@@ -31,7 +31,9 @@
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
 
+#include "broker_conf.h"
 #include "slurmbrokerd.h"
+#include "user_mapping.h"
 
 #define DEFAULT_BROKER_CONF_PATH "/etc/slurm/broker.conf"
 #define DEFAULT_BROKER_PIDFILE "/run/slurmbrokerd/slurmbrokerd.pid"
@@ -237,9 +239,12 @@ static void _install_signal_handlers(void)
  */
 int broker_init(void)
 {
-	/* TODO M02-T3: if (broker_conf_init(g_argv_opts.conf_path))   */
-	/*                  return SLURM_ERROR;                         */
-	/* TODO M02-T4: user_mapping_load(...);                         */
+	if (broker_conf_init(g_argv_opts.conf_path))
+		return SLURM_ERROR;
+	if (user_mapping_load(g_argv_opts.conf_path))
+		return SLURM_ERROR;
+	broker_conf_log_summary();
+
 	/* TODO M03-T6: broker_state_restore();                         */
 	/* TODO M04-T2: proto_init();                                   */
 	/* TODO M08-T1: egress_init();                                  */
@@ -248,7 +253,7 @@ int broker_init(void)
 	/* TODO M13-T1: sync_ticker_start();                            */
 	/* TODO M05-T1: listener_start();                               */
 
-	debug("broker_init: skeleton ready (no sub-modules wired yet)");
+	debug("broker_init: M02 config ready (later sub-modules not wired yet)");
 	return SLURM_SUCCESS;
 }
 
@@ -267,8 +272,8 @@ void broker_fini(void)
 	/* TODO M09-T1: state_machine_stop();                           */
 	/* TODO M08-T1: egress_fini();                                  */
 	/* TODO M04-T2: proto_fini();                                   */
-	/* TODO M02-T4: user_mapping_destroy_all();                     */
-	/* TODO M02-T3: broker_conf_fini();                             */
+	user_mapping_destroy_all();
+	broker_conf_fini();
 
 	xfree(g_argv_opts.conf_path);
 }
@@ -319,8 +324,7 @@ int main(int argc, char **argv)
 	while (!g_shutdown_requested) {
 		if (g_sighup_requested) {
 			g_sighup_requested = 0;
-			/* TODO M02-T4: user_mapping reload here. */
-			info("SIGHUP received: user_mapping reload pending (TODO M02-T4)");
+			info("SIGHUP received: configuration reload is restart-only in MVP");
 		}
 		sleep(1);
 	}

@@ -1,0 +1,185 @@
+# Makefile.in for slurmbrokerd.
+# Hand-maintained from src/slurmbrokerd/Makefile.am for builds that do not run
+# autoreconf. Keep this file in sync with Makefile.am when sources change.
+
+@SET_MAKE@
+
+VPATH = @srcdir@
+
+am__cd = CDPATH="$${ZSH_VERSION+.}$(PATH_SEPARATOR)" && cd
+install_sh_PROGRAM = $(install_sh) -c
+INSTALL_PROGRAM = @INSTALL_PROGRAM@
+INSTALL_PROGRAM_ENV =
+NORMAL_INSTALL = :
+NORMAL_UNINSTALL = :
+transform = $(program_transform_name)
+
+builddir = @builddir@
+srcdir = @srcdir@
+top_builddir = @top_builddir@
+top_srcdir = @top_srcdir@
+abs_builddir = @abs_builddir@
+abs_srcdir = @abs_srcdir@
+prefix = @prefix@
+exec_prefix = @exec_prefix@
+sbindir = @sbindir@
+subdir = src/slurmbrokerd
+
+SHELL = @SHELL@
+MKDIR_P = @MKDIR_P@
+INSTALL = @INSTALL@
+INSTALL_DATA = @INSTALL_DATA@
+INSTALL_SCRIPT = @INSTALL_SCRIPT@
+INSTALL_STRIP_PROGRAM = @INSTALL_STRIP_PROGRAM@
+LIBTOOL = @LIBTOOL@
+CC = @CC@
+CCLD = $(CC)
+CFLAGS = @CFLAGS@
+CPPFLAGS = @CPPFLAGS@
+DEFS = @DEFS@
+LDFLAGS = @LDFLAGS@
+LIBS = @LIBS@
+EXEEXT = @EXEEXT@
+OBJEXT = @OBJEXT@
+LIB_SLURM = @LIB_SLURM@
+LIB_SLURM_BUILD = @LIB_SLURM_BUILD@
+
+AUTOMAKE_OPTIONS = foreign
+CLEANFILES = core.*
+AM_CPPFLAGS = -I$(top_srcdir)
+
+sbin_PROGRAMS = slurmbrokerd$(EXEEXT)
+slurmbrokerd_SOURCES = \
+	slurmbrokerd.c slurmbrokerd.h \
+	broker_conf.c broker_conf.h \
+	user_mapping.c user_mapping.h
+
+slurmbrokerd_OBJECTS = \
+	slurmbrokerd.$(OBJEXT) \
+	broker_conf.$(OBJEXT) \
+	user_mapping.$(OBJEXT)
+
+slurmbrokerd_DEPENDENCIES = $(LIB_SLURM_BUILD)
+slurmbrokerd_LDFLAGS = $(CMD_LDFLAGS)
+slurmbrokerd_LDADD = $(LIB_SLURM)
+
+DEFAULT_INCLUDES = -I. -I$(top_builddir) -I$(top_builddir)/slurm
+COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) \
+	$(CFLAGS)
+LINK = $(LIBTOOL) --tag=CC --mode=link $(CCLD) $(CFLAGS) \
+	$(slurmbrokerd_LDFLAGS) $(LDFLAGS) -o $@
+
+all: all-am
+
+all-am: Makefile $(sbin_PROGRAMS)
+
+.SUFFIXES:
+.SUFFIXES: .c .o .obj
+
+Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
+	cd $(top_builddir) && $(SHELL) ./config.status $(subdir)/$@
+
+$(top_builddir)/config.status: $(top_srcdir)/configure
+	cd $(top_builddir) && $(MAKE) $(AM_MAKEFLAGS) am--refresh
+
+slurmbrokerd$(EXEEXT): $(slurmbrokerd_OBJECTS) $(slurmbrokerd_DEPENDENCIES)
+	@rm -f slurmbrokerd$(EXEEXT)
+	$(LINK) $(slurmbrokerd_OBJECTS) $(slurmbrokerd_LDADD) $(LIBS)
+
+.c.o:
+	$(COMPILE) -c -o $@ $<
+
+.c.obj:
+	$(COMPILE) -c -o $@ `cygpath -w '$<'`
+
+install: install-am
+
+install-am: all-am install-exec-am install-data-am
+
+install-data: install-data-am
+
+install-exec-am: install-sbinPROGRAMS
+
+install-exec: install-exec-am
+
+install-data-am:
+
+install-sbinPROGRAMS: $(sbin_PROGRAMS)
+	@$(NORMAL_INSTALL)
+	@list='$(sbin_PROGRAMS)'; test -n "$(sbindir)" || list=; \
+	if test -n "$$list"; then \
+	  echo " $(MKDIR_P) '$(DESTDIR)$(sbindir)'"; \
+	  $(MKDIR_P) "$(DESTDIR)$(sbindir)" || exit 1; \
+	fi; \
+	for p in $$list; do \
+	  if test -f "$$p"; then f=$$p; else f=$(srcdir)/$$p; fi; \
+	  echo " $(INSTALL_PROGRAM_ENV) $(LIBTOOL) --mode=install $(INSTALL_PROGRAM) $$f '$(DESTDIR)$(sbindir)'"; \
+	  $(INSTALL_PROGRAM_ENV) $(LIBTOOL) --mode=install $(INSTALL_PROGRAM) $$f "$(DESTDIR)$(sbindir)" || exit $$?; \
+	done
+
+uninstall: uninstall-am
+
+uninstall-am: uninstall-sbinPROGRAMS
+
+uninstall-sbinPROGRAMS:
+	@$(NORMAL_UNINSTALL)
+	@list='$(sbin_PROGRAMS)'; test -n "$(sbindir)" || list=; \
+	files=`for p in $$list; do echo "$$p"; done | \
+	  sed -e 's/$(EXEEXT)$$//' -e 's,$$,$(EXEEXT),'`; \
+	test -n "$$list" || exit 0; \
+	echo " rm -f" $$files; \
+	cd "$(DESTDIR)$(sbindir)" && rm -f $$files
+
+clean: clean-am
+
+clean-am: clean-generic clean-sbinPROGRAMS mostlyclean-am
+
+clean-sbinPROGRAMS:
+	-test -z "$(sbin_PROGRAMS)" || rm -f $(sbin_PROGRAMS)
+
+clean-generic:
+	-test -z "$(CLEANFILES)" || rm -f $(CLEANFILES)
+
+mostlyclean: mostlyclean-am
+
+mostlyclean-am: mostlyclean-compile mostlyclean-generic
+
+mostlyclean-compile:
+	-rm -f *.$(OBJEXT)
+
+mostlyclean-generic:
+
+distclean: distclean-am
+	-rm -f Makefile
+
+distclean-am: clean-am distclean-compile distclean-generic
+
+distclean-compile:
+	-rm -f *.tab.c
+
+distclean-generic:
+
+maintainer-clean: maintainer-clean-am
+	-rm -f Makefile
+
+maintainer-clean-am: distclean-am
+
+check: all-am
+
+install-strip:
+	$(MAKE) $(AM_MAKEFLAGS) INSTALL_PROGRAM="$(INSTALL_STRIP_PROGRAM)" \
+	  install
+
+force:
+$(slurmbrokerd_DEPENDENCIES): force
+	@cd `dirname $@` && $(MAKE) `basename $@`
+
+.PHONY: all all-am check clean clean-am clean-generic clean-sbinPROGRAMS \
+	distclean distclean-am distclean-compile distclean-generic force \
+	install install-am install-data install-data-am install-exec \
+	install-exec-am \
+	install-sbinPROGRAMS install-strip maintainer-clean \
+	maintainer-clean-am mostlyclean mostlyclean-am mostlyclean-compile \
+	mostlyclean-generic uninstall uninstall-am uninstall-sbinPROGRAMS
+
+.PRECIOUS: Makefile
