@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 
+#include "src/common/parse_config.h"
 #include "src/common/xhash.h"
 
 typedef struct {
@@ -24,7 +25,7 @@ typedef struct {
 
 extern xhash_t *g_user_mappings;
 
-extern int user_mapping_load(const char *path);
+extern int user_mapping_load_from_hashtbl(s_p_hashtbl_t *tbl);
 extern user_mapping_t *user_mapping_lookup(const char *local_user,
 					   const char *remote_cluster);
 extern void user_mapping_destroy_all(void);

@@ -241,8 +241,6 @@ int broker_init(void)
 {
 	if (broker_conf_init(g_argv_opts.conf_path))
 		return SLURM_ERROR;
-	if (user_mapping_load(g_argv_opts.conf_path))
-		return SLURM_ERROR;
 	broker_conf_log_summary();
 
 	/* TODO M03-T6: broker_state_restore();                         */
@@ -261,7 +259,7 @@ int broker_init(void)
  * broker_fini - reverse of broker_init.
  *
  * Must be safe to call after a partially failed broker_init(): each
- * sub-module's *_fini()/*_stop() should be a no-op when its *_init()
+ * sub-module's *_fini()_stop() should be a no-op when its *_init()
  * was never called.
  */
 void broker_fini(void)

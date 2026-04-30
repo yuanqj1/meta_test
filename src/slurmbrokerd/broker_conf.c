@@ -6,7 +6,9 @@
 
 #include "config.h"
 
+#include <ctype.h>
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -17,6 +19,7 @@
 #include "src/common/log.h"
 #include "src/common/parse_config.h"
 #include "src/common/xmalloc.h"
+#include "src/common/xstring.h"
 
 #include "broker_conf.h"
 #include "user_mapping.h"
@@ -39,7 +42,7 @@
 
 broker_conf_t g_broker_conf;
 
-static const s_p_options_t mapping_line_options[] = {
+static s_p_options_t mapping_line_options[] = {
 	{ "UserMapping", S_P_STRING },
 	{ "LocalUser", S_P_STRING },
 	{ "RemoteCluster", S_P_STRING },
@@ -156,6 +159,39 @@ static void _validate_or_die(void)
 		      g_broker_conf.lookup_software_script);
 }
 
+static void _reject_include_directive(const char *path)
+{
+	FILE *fp;
+	char line[4096];
+	int line_no = 0;
+
+	fp = fopen(path, "r");
+	if (!fp)
+		return;
+
+	while (fgets(line, sizeof(line), fp)) {
+		char *ptr = line;
+
+		line_no++;
+		while (isspace((int)*ptr))
+			ptr++;
+		if (*ptr == '\0' || *ptr == '#')
+			continue;
+		if (xstrncasecmp(ptr, "include", 7))
+			continue;
+		ptr += 7;
+		if (*ptr && !isspace((int)*ptr))
+			continue;
+
+		fclose(fp);
+		fatal("broker.conf: Include is not supported at %s line %d; "
+		      "put UserMapping entries directly in broker.conf",
+		      path, line_no);
+	}
+
+	fclose(fp);
+}
+
 int broker_conf_init(const char *path)
 {
 	s_p_hashtbl_t *tbl;
@@ -164,6 +200,7 @@ int broker_conf_init(const char *path)
 		fatal("broker.conf: no config path supplied");
 
 	broker_conf_fini();
+	_reject_include_directive(path);
 
 	tbl = s_p_hashtbl_create(broker_options);
 	if (s_p_parse_file(tbl, NULL, (char *)path, 0, NULL) == SLURM_ERROR) {
@@ -230,6 +267,7 @@ int broker_conf_init(const char *path)
 	_get_uint32_default(tbl, "RemoteWorkDirFailureRetentionDays",
 			    &g_broker_conf.remote_work_dir_failure_retention_days,
 			    DEFAULT_REMOTE_WORK_DIR_FAILURE_RETENTION_DAYS);
+	user_mapping_load_from_hashtbl(tbl);
 
 	s_p_hashtbl_destroy(tbl);
 	_validate_or_die();

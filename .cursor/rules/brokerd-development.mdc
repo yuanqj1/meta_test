@@ -14,7 +14,7 @@ alwaysApply: true
     - 核心逻辑放在 `src/slurmbrokerd/`
     - 跨组件复用的协议/数据结构放在 `src/common/`
 - **命名空间**: 全局函数遵循 Slurm 风格，使用小写下划线（`snake_case`）与模块前缀（如 `brokerd_xxx_yyy()`），不要使用驼峰命名。
-- **改动范围**: 所有改动均在`src/slurmbrokerd/`下，slurm 原生源码禁止修改,所有逻辑都放到`src/slurmbrokerd/`下。
+- **改动范围**: 所有代码改动均在`src/slurmbrokerd/`下，slurm 原生源码禁止修改,所有逻辑都放到`src/slurmbrokerd/`下，但全局的 makefile 相关文件可以变更
 ## 2. 内存与数据结构（Slurm Native）
 
 - **严格禁止** 直接使用 `malloc` / `free` / `realloc` / `strdup`。
