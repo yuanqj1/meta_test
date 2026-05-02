@@ -30,8 +30,11 @@
 #include "src/common/proc_args.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
+#include "src/interfaces/serializer.h"
 
 #include "broker_conf.h"
+#include "broker_job.h"
+#include "persist.h"
 #include "slurmbrokerd.h"
 #include "user_mapping.h"
 
@@ -243,7 +246,29 @@ int broker_init(void)
 		return SLURM_ERROR;
 	broker_conf_log_summary();
 
-	/* TODO M03-T6: broker_state_restore();                         */
+	/*
+	 * The serializer plugin is needed by broker_job_from_json() during
+	 * restore; load it before the table is touched. persist_thread_start
+	 * idempotently re-loads it later, which is harmless.
+	 */
+	if (serializer_g_init(MIME_TYPE_JSON_PLUGIN, NULL)) {
+		error("broker_init: serializer_g_init(json) failed");
+		return SLURM_ERROR;
+	}
+
+	if (broker_job_table_init() != SLURM_SUCCESS) {
+		error("broker_init: broker_job_table_init failed");
+		return SLURM_ERROR;
+	}
+	if (broker_state_restore() != SLURM_SUCCESS) {
+		error("broker_init: broker_state_restore failed");
+		return SLURM_ERROR;
+	}
+	if (persist_thread_start() != SLURM_SUCCESS) {
+		error("broker_init: persist_thread_start failed");
+		return SLURM_ERROR;
+	}
+
 	/* TODO M04-T2: proto_init();                                   */
 	/* TODO M08-T1: egress_init();                                  */
 	/* TODO M09-T1: state_machine_start();                          */
@@ -251,7 +276,7 @@ int broker_init(void)
 	/* TODO M13-T1: sync_ticker_start();                            */
 	/* TODO M05-T1: listener_start();                               */
 
-	debug("broker_init: M02 config ready (later sub-modules not wired yet)");
+	debug("broker_init: M02/M03 ready (later sub-modules not wired yet)");
 	return SLURM_SUCCESS;
 }
 
@@ -259,7 +284,7 @@ int broker_init(void)
  * broker_fini - reverse of broker_init.
  *
  * Must be safe to call after a partially failed broker_init(): each
- * sub-module's *_fini()_stop() should be a no-op when its *_init()
+ * sub-module's *_fini() / *_stop() must be a no-op when its *_init()
  * was never called.
  */
 void broker_fini(void)
@@ -270,6 +295,13 @@ void broker_fini(void)
 	/* TODO M09-T1: state_machine_stop();                           */
 	/* TODO M08-T1: egress_fini();                                  */
 	/* TODO M04-T2: proto_fini();                                   */
+
+	/* Stop the checkpoint thread first so the worker cannot race a
+	 * freed table; the thread also performs one final save during its
+	 * own teardown. */
+	persist_thread_stop();
+	broker_job_table_fini();
+
 	user_mapping_destroy_all();
 	broker_conf_fini();
 
@@ -329,7 +361,15 @@ int main(int argc, char **argv)
 
 	info("graceful shutdown initiated");
 
-	/* TODO M03-T6: broker_state_save();  flush JSONL before exit. */
+	/*
+	 * Force one synchronous flush before we tear anything down so the
+	 * very latest state is on disk even if the persist thread is still
+	 * mid-sleep when shutdown was requested. broker_fini() will join
+	 * the worker which performs its own final flush; this extra one
+	 * keeps the shutdown latency tight from the user's point of view.
+	 */
+	if (broker_state_save() != SLURM_SUCCESS)
+		error("shutdown: pre-fini broker_state_save failed");
 
 	if (pidfd >= 0 && unlink(DEFAULT_BROKER_PIDFILE) < 0)
 		error("Unable to remove pidfile `%s': %m",

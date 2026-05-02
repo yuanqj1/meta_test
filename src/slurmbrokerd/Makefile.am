@@ -15,7 +15,9 @@ sbin_PROGRAMS = slurmbrokerd
 slurmbrokerd_SOURCES = \
 	slurmbrokerd.c slurmbrokerd.h \
 	broker_conf.c broker_conf.h \
-	user_mapping.c user_mapping.h
+	user_mapping.c user_mapping.h \
+	broker_job.c broker_job.h \
+	persist.c persist.h
 
 slurmbrokerd_DEPENDENCIES = $(LIB_SLURM_BUILD)
 slurmbrokerd_LDFLAGS = $(CMD_LDFLAGS)
