@@ -6,6 +6,7 @@
 
 #include "config.h"
 
+#include <stdbool.h>
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
@@ -43,7 +44,6 @@
 broker_conf_t g_broker_conf;
 
 static s_p_options_t mapping_line_options[] = {
-	{ "UserMapping", S_P_STRING },
 	{ "LocalUser", S_P_STRING },
 	{ "RemoteCluster", S_P_STRING },
 	{ "RemoteUser", S_P_STRING },
@@ -79,7 +79,7 @@ static const s_p_options_t broker_options[] = {
 	{ "LookupTimeoutSec", S_P_UINT32 },
 	{ "RemoteWorkDirRetentionHours", S_P_UINT32 },
 	{ "RemoteWorkDirFailureRetentionDays", S_P_UINT32 },
-	{ "UserMapping", S_P_LINE, NULL, NULL, mapping_line_options },
+	{ "LocalUser", S_P_LINE, NULL, NULL, mapping_line_options },
 	{ NULL }
 };
 
@@ -159,6 +159,14 @@ static void _validate_or_die(void)
 		      g_broker_conf.lookup_software_script);
 }
 
+static bool _is_include_directive(char *ptr)
+{
+	if (xstrncasecmp(ptr, "include", 7))
+		return false;
+	ptr += 7;
+	return (*ptr == '\0' || isspace((int)*ptr));
+}
+
 static void _reject_include_directive(const char *path)
 {
 	FILE *fp;
@@ -167,7 +175,7 @@ static void _reject_include_directive(const char *path)
 
 	fp = fopen(path, "r");
 	if (!fp)
-		return;
+		fatal("broker.conf: cannot open %s: %m", path);
 
 	while (fgets(line, sizeof(line), fp)) {
 		char *ptr = line;
@@ -177,16 +185,12 @@ static void _reject_include_directive(const char *path)
 			ptr++;
 		if (*ptr == '\0' || *ptr == '#')
 			continue;
-		if (xstrncasecmp(ptr, "include", 7))
-			continue;
-		ptr += 7;
-		if (*ptr && !isspace((int)*ptr))
-			continue;
-
-		fclose(fp);
-		fatal("broker.conf: Include is not supported at %s line %d; "
-		      "put UserMapping entries directly in broker.conf",
-		      path, line_no);
+		if (_is_include_directive(ptr)) {
+			fclose(fp);
+			fatal("broker.conf: Include is not supported at %s line %d; "
+			      "put user mappings directly in broker.conf",
+			      path, line_no);
+		}
 	}
 
 	fclose(fp);

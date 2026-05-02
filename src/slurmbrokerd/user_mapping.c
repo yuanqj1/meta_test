@@ -64,10 +64,8 @@ static void _load_one_mapping(s_p_hashtbl_t *line, int idx)
 	bool have_uid, have_gid;
 
 	mapping = xmalloc(sizeof(*mapping));
-	if (!s_p_get_string(&mapping->local_user, "LocalUser", line) ||
-	    !mapping->local_user || !*mapping->local_user)
-		_get_mapping_string_required(line, "UserMapping",
-					     &mapping->local_user, idx);
+	_get_mapping_string_required(line, "LocalUser",
+				     &mapping->local_user, idx);
 	_get_mapping_string_required(line, "RemoteCluster",
 				     &mapping->remote_cluster, idx);
 	_get_mapping_string_required(line, "RemoteUser", &mapping->remote_user,
@@ -105,7 +103,7 @@ int user_mapping_load_from_hashtbl(s_p_hashtbl_t *tbl)
 	if (!g_user_mappings)
 		fatal("broker.conf: xhash_init failed for user mappings");
 
-	if (s_p_get_line(&lines, &line_count, "UserMapping", tbl)) {
+	if (s_p_get_line(&lines, &line_count, "LocalUser", tbl)) {
 		for (int i = 0; i < line_count; i++)
 			_load_one_mapping(lines[i], i);
 	}
