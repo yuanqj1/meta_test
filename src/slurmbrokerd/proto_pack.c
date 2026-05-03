@@ -39,6 +39,16 @@
 
 /*****************************************************************************\
  *                       embedded job_desc helpers
+ *
+ * LEGACY_M04_TRANSITIONAL: only used by the 4 ctld<->broker payloads
+ * (REQUEST_FORWARD_JOB / RESPONSE_FORWARD_JOB / REMOTE_STATE / TERMINAL_
+ * STATE) which are themselves marked legacy. ctld<->broker traffic is
+ * always same-host same-libslurm, so the slurm-version coupling carried
+ * by these helpers is acceptable in that context only.
+ *
+ * The cross-cluster broker<->broker payloads (BROKER_FORWARD_JOB et al)
+ * deliberately do NOT call these helpers; that path is fully
+ * slurm-version-INDEPENDENT.
 \*****************************************************************************/
 
 /* Pack a job_desc_msg_t into the outer frame as a length-prefixed blob.
@@ -224,11 +234,17 @@ unpack_error:
 	return SLURM_ERROR;
 }
 
-/* ===== REQUEST_BROKER_FORWARD_JOB ===== */
+/* ===== REQUEST_BROKER_FORWARD_JOB =====
+ *
+ * Slurm-version-INDEPENDENT wire layout: every field is a flat string
+ * or fixed-width integer; no embedded job_desc_msg_t. This is what
+ * lets a 24.05 broker safely forward to a 23.11 broker.
+ */
 
 static void _pack_broker_forward_job_msg(brokerd_broker_forward_job_msg_t *m,
 					 buf_t *buffer, uint16_t pv)
 {
+	(void) pv;
 	packstr(m->trace_id, buffer);
 	pack8(m->hop_count, buffer);
 	packstr(m->src_cluster, buffer);
@@ -237,7 +253,7 @@ static void _pack_broker_forward_job_msg(brokerd_broker_forward_job_msg_t *m,
 	packstr(m->remote_user_name, buffer);
 	packstr(m->target_partition, buffer);
 	packstr(m->app_name, buffer);
-	_pack_job_desc(m->job_desc, buffer, pv);
+	packstr(m->script_path, buffer);
 }
 
 static int _unpack_broker_forward_job_msg(
@@ -245,6 +261,7 @@ static int _unpack_broker_forward_job_msg(
 {
 	brokerd_broker_forward_job_msg_t *m = xmalloc(sizeof(*m));
 
+	(void) pv;
 	safe_unpackstr(&m->trace_id, buffer);
 	safe_unpack8(&m->hop_count, buffer);
 	safe_unpackstr(&m->src_cluster, buffer);
@@ -253,8 +270,7 @@ static int _unpack_broker_forward_job_msg(
 	safe_unpackstr(&m->remote_user_name, buffer);
 	safe_unpackstr(&m->target_partition, buffer);
 	safe_unpackstr(&m->app_name, buffer);
-	if (_unpack_job_desc(&m->job_desc, buffer, pv))
-		goto unpack_error;
+	safe_unpackstr(&m->script_path, buffer);
 	*out = m;
 	return SLURM_SUCCESS;
 

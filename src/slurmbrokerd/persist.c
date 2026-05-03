@@ -47,9 +47,11 @@ static bool            persist_thread_active = false;
 static bool            persist_async_pending = false;
 
 /*
- * Restore line buffer is heap-allocated so we never put a 64KB array on
- * the broker's main-thread stack (large array jobs can balloon job_desc
- * and therefore one JSONL row).
+ * Restore line buffer is heap-allocated so we never put a large array
+ * on the broker's main-thread stack. broker_job_t no longer carries an
+ * embedded job_desc, so a single JSONL row is bounded by the sum of
+ * the flat string fields (path / TRES / reason); 256KB is generous
+ * headroom even for pathological cluster names plus deep work dirs.
  */
 #define PERSIST_LINE_BUF_SZ (256 * 1024)
 

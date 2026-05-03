@@ -112,8 +112,7 @@ void brokerd_free_broker_forward_job_msg(brokerd_broker_forward_job_msg_t *m)
 	xfree(m->remote_user_name);
 	xfree(m->target_partition);
 	xfree(m->app_name);
-	if (m->job_desc)
-		slurm_free_job_desc_msg(m->job_desc);
+	xfree(m->script_path);
 	xfree(m);
 }
 

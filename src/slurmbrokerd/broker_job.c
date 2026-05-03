@@ -4,29 +4,32 @@
  *  Part of the Slurm cross-domain broker (MVP). See broker_job.h for the
  *  contract and doc/checklists/M03-data-persist.md for the rationale.
  *
- *  All Slurm-side helpers are reused as-is. Anything broker-specific
- *  (base64, JSON escape/build, JSON dict walking) is implemented locally
- *  to keep the broker self-contained per the workspace rule that forbids
- *  edits to native Slurm sources.
+ *  Slurm-version independence
+ *  --------------------------
+ *  This module deliberately avoids any slurm-version-bound type. The
+ *  earlier `job_desc_msg_t *job_desc` field on broker_job_t (and its
+ *  base64-via-pack_msg JSON encoding) was removed because pack_msg's
+ *  REQUEST_SUBMIT_BATCH_JOB body changes shape across slurm major
+ *  versions, which would break A=24.05 <-> B=23.11 cross-cluster
+ *  scenarios. The receiver broker now reconstructs the local job
+ *  description on its own libslurm version using the small set of
+ *  flat fields (script_path / app_name / remote_user_name /
+ *  target_partition / dst_work_dir) shipped on the wire.
 \*****************************************************************************/
 
 #include "config.h"
 
-#include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include "slurm/slurm.h"
+#include "slurm/slurm_errno.h"
 
 #include "src/common/data.h"
 #include "src/common/list.h"
 #include "src/common/log.h"
 #include "src/common/macros.h"
-#include "src/common/pack.h"
-#include "src/common/slurm_protocol_defs.h"
-#include "src/common/slurm_protocol_pack.h"
 #include "src/common/xhash.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
@@ -41,180 +44,6 @@
 xhash_t        *g_broker_jobs;
 list_t         *g_broker_jobs_list;
 pthread_mutex_t g_broker_jobs_lock = PTHREAD_MUTEX_INITIALIZER;
-
-/*****************************************************************************\
- *                       broker-local base64 codec
- *
- * Slurm exposes only base64url helpers via xstring.h; for the JSONL state
- * file we want plain RFC 4648 base64 (with '=' padding) so any standard
- * tool can decode it during ops investigation. Implemented here so we do
- * not need to touch any native Slurm source.
-\*****************************************************************************/
-
-static const char _b64_chars[] =
-	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static int8_t _b64_table[256];
-static bool   _b64_table_ready = false;
-
-static void _b64_table_init(void)
-{
-	if (_b64_table_ready)
-		return;
-	memset(_b64_table, -1, sizeof(_b64_table));
-	for (int i = 0; i < 64; i++)
-		_b64_table[(unsigned char) _b64_chars[i]] = i;
-	_b64_table_ready = true;
-}
-
-static char *_brokerd_base64_encode(const unsigned char *src, uint32_t len)
-{
-	uint32_t out_len = 4 * ((len + 2) / 3);
-	char *out = xmalloc(out_len + 1);
-	uint32_t i, j = 0;
-
-	for (i = 0; i + 2 < len; i += 3) {
-		uint32_t v = ((uint32_t) src[i] << 16) |
-			     ((uint32_t) src[i + 1] << 8) |
-			     ((uint32_t) src[i + 2]);
-		out[j++] = _b64_chars[(v >> 18) & 0x3f];
-		out[j++] = _b64_chars[(v >> 12) & 0x3f];
-		out[j++] = _b64_chars[(v >>  6) & 0x3f];
-		out[j++] = _b64_chars[ v        & 0x3f];
-	}
-	if (i < len) {
-		uint32_t v = (uint32_t) src[i] << 16;
-
-		if (i + 1 < len)
-			v |= (uint32_t) src[i + 1] << 8;
-		out[j++] = _b64_chars[(v >> 18) & 0x3f];
-		out[j++] = _b64_chars[(v >> 12) & 0x3f];
-		out[j++] = (i + 1 < len) ? _b64_chars[(v >> 6) & 0x3f] : '=';
-		out[j++] = '=';
-	}
-	out[j] = '\0';
-	return out;
-}
-
-static unsigned char *_brokerd_base64_decode(const char *src, uint32_t *out_len)
-{
-	uint32_t in_len = strlen(src);
-	uint32_t pad = 0;
-	uint32_t out_cap;
-	unsigned char *out;
-	uint32_t i = 0, j = 0;
-
-	_b64_table_init();
-	if (in_len % 4)
-		return NULL;
-	if (in_len == 0) {
-		*out_len = 0;
-		return xmalloc(1);
-	}
-
-	if (src[in_len - 1] == '=')
-		pad++;
-	if (in_len >= 2 && src[in_len - 2] == '=')
-		pad++;
-
-	out_cap = (in_len / 4) * 3 - pad;
-	out = xmalloc(out_cap ? out_cap : 1);
-
-	while (i < in_len) {
-		int32_t v0 = (src[i] == '=') ? 0 : _b64_table[(unsigned char) src[i]];
-		int32_t v1 = (src[i+1] == '=') ? 0 : _b64_table[(unsigned char) src[i+1]];
-		int32_t v2 = (src[i+2] == '=') ? 0 : _b64_table[(unsigned char) src[i+2]];
-		int32_t v3 = (src[i+3] == '=') ? 0 : _b64_table[(unsigned char) src[i+3]];
-
-		if (v0 < 0 || v1 < 0 || v2 < 0 || v3 < 0) {
-			xfree(out);
-			return NULL;
-		}
-		if (j < out_cap)
-			out[j++] = (v0 << 2) | (v1 >> 4);
-		if (j < out_cap)
-			out[j++] = ((v1 & 0x0f) << 4) | (v2 >> 2);
-		if (j < out_cap)
-			out[j++] = ((v2 & 0x03) << 6) | v3;
-		i += 4;
-	}
-	*out_len = out_cap;
-	return out;
-}
-
-/*****************************************************************************\
- *                       job_desc <-> binary buffer
- *
- * Slurm's _pack_job_desc_msg / _unpack_job_desc_msg are file-static, but
- * the public pack_msg() / unpack_msg() route REQUEST_SUBMIT_BATCH_JOB to
- * exactly that pair. We piggy-back on that contract rather than declaring
- * a private wrapper inside the Slurm tree.
-\*****************************************************************************/
-
-static char *_job_desc_to_b64(job_desc_msg_t *job_desc)
-{
-	slurm_msg_t msg;
-	buf_t *buf = NULL;
-	char *b64 = NULL;
-
-	if (!job_desc)
-		return xstrdup("");
-
-	slurm_msg_t_init(&msg);
-	msg.msg_type = REQUEST_SUBMIT_BATCH_JOB;
-	msg.protocol_version = SLURM_PROTOCOL_VERSION;
-	msg.data = job_desc;
-
-	buf = init_buf(BUF_SIZE);
-	if (pack_msg(&msg, buf)) {
-		error("%s: pack_msg failed", __func__);
-		FREE_NULL_BUFFER(buf);
-		return NULL;
-	}
-	b64 = _brokerd_base64_encode((unsigned char *) get_buf_data(buf),
-				     get_buf_offset(buf));
-	FREE_NULL_BUFFER(buf);
-	return b64;
-}
-
-static job_desc_msg_t *_job_desc_from_b64(const char *b64)
-{
-	slurm_msg_t msg;
-	buf_t *buf;
-	unsigned char *raw;
-	uint32_t raw_len = 0;
-	job_desc_msg_t *job_desc = NULL;
-
-	if (!b64 || !*b64)
-		return NULL;
-
-	raw = _brokerd_base64_decode(b64, &raw_len);
-	if (!raw) {
-		error("%s: invalid base64 input", __func__);
-		return NULL;
-	}
-
-	/* create_buf takes ownership of the raw buffer */
-	buf = create_buf((char *) raw, raw_len);
-	if (!buf) {
-		xfree(raw);
-		return NULL;
-	}
-
-	slurm_msg_t_init(&msg);
-	msg.msg_type = REQUEST_SUBMIT_BATCH_JOB;
-	msg.protocol_version = SLURM_PROTOCOL_VERSION;
-	msg.data = NULL;
-
-	if (unpack_msg(&msg, buf)) {
-		error("%s: unpack_msg failed", __func__);
-		FREE_NULL_BUFFER(buf);
-		return NULL;
-	}
-	job_desc = msg.data;
-	FREE_NULL_BUFFER(buf);
-	return job_desc;
-}
 
 /*****************************************************************************\
  *                         JSON building helpers
@@ -280,13 +109,9 @@ void broker_job_destroy(broker_job_t *job)
 	xfree(job->src_work_dir);
 	xfree(job->dst_work_dir);
 	xfree(job->script_path);
+	xfree(job->app_name);
 	xfree(job->state_reason);
 	xfree(job->remote_alloc_tres);
-
-	if (job->job_desc) {
-		slurm_free_job_desc_msg(job->job_desc);
-		job->job_desc = NULL;
-	}
 
 	slurm_mutex_destroy(&job->lock);
 	xfree(job);
@@ -431,7 +256,6 @@ void broker_job_table_foreach(int (*fn)(broker_job_t *, void *), void *arg)
 char *broker_job_to_json(broker_job_t *job)
 {
 	char *out = NULL;
-	char *b64;
 
 	if (!job)
 		return NULL;
@@ -470,6 +294,8 @@ char *broker_job_to_json(broker_job_t *job)
 	_json_append_str(&out, job->dst_work_dir);
 	xstrcat(out, ",\"script_path\":");
 	_json_append_str(&out, job->script_path);
+	xstrcat(out, ",\"app_name\":");
+	_json_append_str(&out, job->app_name);
 
 	xstrfmtcat(out, ",\"state\":%d", (int) job->state);
 	xstrcat(out, ",\"state_reason\":");
@@ -495,11 +321,6 @@ char *broker_job_to_json(broker_job_t *job)
 	xstrfmtcat(out, ",\"cancel_propagated\":%s",
 		   job->cancel_propagated ? "true" : "false");
 
-	b64 = _job_desc_to_b64(job->job_desc);
-	xstrcat(out, ",\"job_desc_b64\":");
-	_json_append_str(&out, b64 ? b64 : "");
-	xfree(b64);
-
 	xstrcat(out, "}");
 	return out;
 }
@@ -511,7 +332,12 @@ char *broker_job_to_json(broker_job_t *job)
  * restore is attempted) to parse the JSON line into a data_t tree, then
  * walks the dict to populate broker_job_t. This intentionally tolerates
  * missing optional fields by leaving them at their broker_job_create()
- * defaults; only trace_id, src_job_id, state, and job_desc_b64 are required.
+ * defaults; only trace_id is required (everything else is best-effort
+ * forward/backward compatible).
+ *
+ * Note: legacy "job_desc_b64" fields written by older broker versions
+ * are silently ignored, since broker_job_t no longer carries a
+ * slurm-version-bound job_desc.
 \*****************************************************************************/
 
 static const char *_dict_get_str(const data_t *dict, const char *key)
@@ -568,7 +394,6 @@ broker_job_t *broker_job_from_json(const char *line)
 {
 	data_t *root = NULL;
 	const char *trace_id;
-	const char *b64;
 	broker_job_t *job = NULL;
 	int64_t v64;
 
@@ -587,14 +412,8 @@ broker_job_t *broker_job_from_json(const char *line)
 	}
 
 	trace_id = _dict_get_str(root, "trace_id");
-	b64      = _dict_get_str(root, "job_desc_b64");
 	if (!trace_id || !*trace_id) {
 		error("%s: missing trace_id", __func__);
-		goto fail;
-	}
-	if (!b64) {
-		error("%s: missing job_desc_b64 for trace_id=%s",
-		      __func__, trace_id);
 		goto fail;
 	}
 
@@ -623,6 +442,7 @@ broker_job_t *broker_job_from_json(const char *line)
 	_dict_take_str(root, "src_work_dir", &job->src_work_dir);
 	_dict_take_str(root, "dst_work_dir", &job->dst_work_dir);
 	_dict_take_str(root, "script_path",  &job->script_path);
+	_dict_take_str(root, "app_name",     &job->app_name);
 
 	if (_dict_get_int(root, "state", &v64))
 		job->state = (broker_job_state_t) v64;
@@ -646,13 +466,6 @@ broker_job_t *broker_job_from_json(const char *line)
 
 	_dict_get_bool(root, "cancel_requested",  &job->cancel_requested);
 	_dict_get_bool(root, "cancel_propagated", &job->cancel_propagated);
-
-	job->job_desc = _job_desc_from_b64(b64);
-	if (!job->job_desc) {
-		error("%s: failed to unpack job_desc for trace_id=%s",
-		      __func__, job->trace_id);
-		goto fail;
-	}
 
 	FREE_NULL_DATA(root);
 	return job;

@@ -138,7 +138,19 @@ typedef struct {
 	char      *trace_id;
 } brokerd_forward_job_resp_msg_t; /* LEGACY_M04_TRANSITIONAL */
 
-/* REQUEST_BROKER_FORWARD_JOB : broker (orig) -> broker (recv) */
+/*
+ * REQUEST_BROKER_FORWARD_JOB : broker (orig) -> broker (recv).
+ *
+ * Slurm-version-INDEPENDENT payload. The receiver uses
+ *   sudo -u <remote_user_name> sbatch \
+ *        --partition=<target_partition> \
+ *        --chdir=<dst_work_dir> \
+ *        <dst_work_dir>/<basename(script_path)>
+ * to submit, where the script's own #SBATCH header carries every
+ * resource request (nodes / time / mem / ...). This avoids shipping a
+ * job_desc_msg_t and keeps A=24.05 <-> B=23.11 cross-cluster traffic
+ * compatible.
+ */
 typedef struct {
 	char      *trace_id;
 	uint8_t    hop_count;
@@ -147,8 +159,10 @@ typedef struct {
 	char      *src_user_name;
 	char      *remote_user_name;
 	char      *target_partition;
-	char      *app_name;
-	job_desc_msg_t *job_desc;
+	char      *app_name;          /* fed to lookup_software.sh on receiver */
+	char      *script_path;       /* originator-side absolute path; receiver
+				       * uses basename() after rsync delivers
+				       * the file under dst_work_dir. */
 } brokerd_broker_forward_job_msg_t;
 
 /* RESPONSE_BROKER_ACK : broker (recv) -> broker (orig) */

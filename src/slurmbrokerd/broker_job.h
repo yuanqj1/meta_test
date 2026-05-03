@@ -17,7 +17,14 @@
 #include <stdint.h>
 #include <time.h>
 
-#include "slurm/slurm.h"
+/*
+ * Intentionally NOT including <slurm/slurm.h> here. broker_job_t carries
+ * only a handful of broker-flat fields; cross-cluster forwarding never
+ * traffics in slurm-version-bound types like job_desc_msg_t. Receivers
+ * reconstruct the local job description from (script_path, app_name,
+ * remote_user_name, target_partition, dst_work_dir) using their own
+ * libslurm version's slurm_init_job_desc_msg() + slurm_submit_batch_job_msg().
+ */
 
 #include "src/common/list.h"
 #include "src/common/xhash.h"
@@ -75,10 +82,15 @@ typedef struct broker_job {
 	/* working directories */
 	char      *src_work_dir;
 	char      *dst_work_dir;
-	char      *script_path;
+	char      *script_path;       /* originator-side absolute path; the
+				       * remote broker only uses basename()
+				       * after rsync has placed the file under
+				       * dst_work_dir. */
 
-	/* sbatch payload (Slurm-native struct) */
-	job_desc_msg_t *job_desc;
+	/* application identity (drives lookup_software.sh + script rewrite).
+	 * This deliberately replaces the earlier job_desc_msg_t* field so
+	 * broker_job_t is free of any slurm-version-bound types. */
+	char      *app_name;
 
 	/* state machine */
 	broker_job_state_t state;

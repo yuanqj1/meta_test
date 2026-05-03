@@ -72,13 +72,19 @@ void handle_broker_forward_job(void *payload, int conn_fd)
 	};
 	brokerd_broker_forward_job_msg_t *m = payload;
 
-	info("handler_remote: BROKER_FORWARD_JOB received, trace_id=%s (M07 stub)",
-	     m->trace_id ? m->trace_id : "(null)");
+	info("handler_remote: BROKER_FORWARD_JOB received, trace_id=%s "
+	     "app=%s script=%s (M07 stub)",
+	     m->trace_id ? m->trace_id : "(null)",
+	     m->app_name ? m->app_name : "(null)",
+	     m->script_path ? m->script_path : "(null)");
 
 	/* TODO M07-T1: real implementation
-	 *   - allocate broker_job_t with role=RECEIVER
-	 *   - rewrite job_desc.script via lookup_software / rewrite.c
-	 *   - mkdir dst_work_dir under remote_user
+	 *   - allocate broker_job_t with role=RECEIVER, fill app_name +
+	 *     basename(script_path) + remote_user_name + target_partition
+	 *     from m
+	 *   - mkdir dst_work_dir under remote_user (sudo -u <remote_user>)
+	 *   - the actual sbatch happens later (handle_broker_staged_in),
+	 *     after the originator side rsync places the script file
 	 *   - reply with ACK { error_code, trace_id, dst_work_dir } */
 	resp.trace_id = m->trace_id; /* echo back for now */
 	(void) _reply(conn_fd, BROKERD_RESPONSE_BROKER_ACK, &resp);
@@ -98,9 +104,16 @@ void handle_broker_staged_in(void *payload, int conn_fd)
 	info("handler_remote: BROKER_STAGED_IN received, trace_id=%s (M07 stub)",
 	     m->trace_id ? m->trace_id : "(null)");
 
-	/* TODO M07-T2: sbatch the rewritten script as remote_user, capture
-	 * remote_job_id, reply with SUBMITTED { error_code, trace_id,
-	 * remote_job_id }. */
+	/* TODO M07-T2: look up local broker_job_t by trace_id; rewrite
+	 * `source ...` lines in dst_work_dir/<basename(script_path)> using
+	 * lookup_software.sh <remote_cluster> <app_name>; then run
+	 *   sudo -u <remote_user> sbatch \
+	 *        --partition=<target_partition> \
+	 *        --chdir=<dst_work_dir> \
+	 *        <dst_work_dir>/<basename(script_path)>
+	 * Capture remote_job_id from sbatch stdout, reply with SUBMITTED.
+	 * No version-bound job_desc_msg_t is involved: each side uses its
+	 * own libslurm to drive sbatch. */
 	resp.trace_id = m->trace_id;
 	(void) _reply(conn_fd, BROKERD_RESPONSE_BROKER_SUBMITTED, &resp);
 
