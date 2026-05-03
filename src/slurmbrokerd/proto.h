@@ -357,4 +357,18 @@ extern int proto_send_recv_to_peer(uint16_t msg_type, void *req,
 				   int timeout_s, uint16_t resp_type,
 				   void **resp_out);
 
+/*
+ * Fire-and-forget variant: send a single request frame to the peer and
+ * close the connection without reading any response. Used by the cancel
+ * and cleanup RPCs whose receiver-side handlers (handler_remote.c) do
+ * not write back a response.
+ *
+ * `timeout_s` bounds the connect + send phase; on send failure the
+ * function returns SLURM_ERROR. SO_LINGER is set on the socket so the
+ * kernel keeps draining the bytes after our close() until the peer has
+ * fully read them, which avoids the receiver seeing a truncated frame
+ * when the originator races to teardown.
+ */
+extern int proto_send_to_peer(uint16_t msg_type, void *req, int timeout_s);
+
 #endif /* _BROKERD_PROTO_H */

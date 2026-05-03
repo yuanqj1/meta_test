@@ -34,6 +34,7 @@
 
 #include "broker_conf.h"
 #include "broker_job.h"
+#include "egress.h"
 #include "listener.h"
 #include "persist.h"
 #include "proto.h"
@@ -286,6 +287,16 @@ int broker_init(void)
 	}
 
 	/*
+	 * Egress wraps proto_send_*_to_peer + slurm_send_recv_controller
+	 * for the state machine / sync_ticker / cleanup callers. Init is
+	 * a sanity check; no background threads here.
+	 */
+	if (egress_init() != SLURM_SUCCESS) {
+		error("broker_init: egress_init failed");
+		return SLURM_ERROR;
+	}
+
+	/*
 	 * Listener brings up two listening sockets:
 	 *   - g_broker_conf.ctld_port (8442): slurm-native frame for
 	 *     ctld <-> broker traffic. Requires the slurmctld engineer's
@@ -306,12 +317,11 @@ int broker_init(void)
 		return SLURM_ERROR;
 	}
 
-	/* TODO M08-T1: egress_init();                                  */
 	/* TODO M09-T1: state_machine_start();                          */
 	/* TODO M10-T1: stage_pool_start();                             */
 	/* TODO M13-T1: sync_ticker_start();                            */
 
-	debug("broker_init: M02/M03/M04/M05 ready (later sub-modules not wired yet)");
+	debug("broker_init: M02/M03/M04/M05/M06/M07/M08 ready (later sub-modules not wired yet)");
 	return SLURM_SUCCESS;
 }
 
@@ -327,13 +337,17 @@ void broker_fini(void)
 	/* TODO M13-T1: sync_ticker_stop();                             */
 	/* TODO M10-T1: stage_pool_stop();                              */
 	/* TODO M09-T1: state_machine_stop();                           */
-	/* TODO M08-T1: egress_fini();                                  */
 
 	/* Stop the listener FIRST so no fresh inbound RPC can land while
 	 * downstream sub-modules are tearing down. The listener thread
 	 * holds no locks across its select() boundary, so this only
 	 * costs <= 1s (the select timeout). */
 	listener_stop();
+
+	/* Egress is stateless besides its dependence on proto_init; tear
+	 * it down before proto_fini so any future egress side state
+	 * (per-thread caches, etc) gets a chance to release first. */
+	egress_fini();
 
 	/* RPC layer drops its peer endpoint; safe after listener stop
 	 * because no inbound path can now drive an outbound proto call. */

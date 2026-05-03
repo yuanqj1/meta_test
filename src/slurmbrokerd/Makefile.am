@@ -22,7 +22,8 @@ slurmbrokerd_SOURCES = \
 	proto_pack.c \
 	listener.c listener.h \
 	handler_ctld.c handler_ctld.h \
-	handler_remote.c handler_remote.h
+	handler_remote.c handler_remote.h \
+	egress.c egress.h
 
 slurmbrokerd_DEPENDENCIES = $(LIB_SLURM_BUILD)
 slurmbrokerd_LDFLAGS = $(CMD_LDFLAGS)

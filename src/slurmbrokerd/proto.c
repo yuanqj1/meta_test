@@ -507,6 +507,63 @@ int proto_send_recv_to_peer(uint16_t msg_type, void *req,
 }
 
 /*****************************************************************************\
+ *                       proto_send_to_peer (fire-and-forget)
+\*****************************************************************************/
+
+int proto_send_to_peer(uint16_t msg_type, void *req, int timeout_s)
+{
+	buf_t *send_buf = NULL;
+	int fd = -1;
+	ssize_t sent;
+	struct linger lng = { .l_onoff = 1, .l_linger = 5 };
+
+	(void) timeout_s; /* connect/send timeout governed by libslurm defaults */
+
+	if (!proto_inited) {
+		error("%s: proto layer not initialised", __func__);
+		return SLURM_ERROR;
+	}
+
+	send_buf = init_buf(BUF_SIZE);
+	if (!send_buf) {
+		error("%s: init_buf failed", __func__);
+		return SLURM_ERROR;
+	}
+	if (brokerd_wire_build(send_buf, msg_type, req,
+			       SLURM_PROTOCOL_VERSION) != SLURM_SUCCESS) {
+		FREE_NULL_BUFFER(send_buf);
+		return SLURM_ERROR;
+	}
+
+	fd = slurm_open_msg_conn(&g_peer_addr);
+	if (fd < 0) {
+		error("%s: connect to %s:%u failed: %m",
+		      __func__, g_peer_host, g_peer_port);
+		FREE_NULL_BUFFER(send_buf);
+		return SLURM_ERROR;
+	}
+
+	/*
+	 * Linger so close() blocks until the kernel drains our bytes; this
+	 * keeps the receiver from seeing a half-frame when we tear the
+	 * socket down right after sendto().
+	 */
+	(void) setsockopt(fd, SOL_SOCKET, SO_LINGER, &lng, sizeof(lng));
+
+	sent = slurm_msg_sendto(fd, get_buf_data(send_buf),
+				get_buf_offset(send_buf));
+	FREE_NULL_BUFFER(send_buf);
+	(void) close(fd);
+
+	if (sent < 0) {
+		error("%s: slurm_msg_sendto to %s:%u failed: %m",
+		      __func__, g_peer_host, g_peer_port);
+		return SLURM_ERROR;
+	}
+	return SLURM_SUCCESS;
+}
+
+/*****************************************************************************\
  *                       lifecycle
 \*****************************************************************************/
 
