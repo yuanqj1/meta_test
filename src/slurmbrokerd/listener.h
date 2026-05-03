@@ -18,7 +18,7 @@
  *  Per the M04 §10/§11 split, the ctld port path expects the slurmctld
  *  engineer's PR to register the 4 ctld<->broker msg_types in
  *  src/common/. Until that lands, slurm_receive_msg() rejects the
- *  unknown msg_type and replies ESLURM_PROTOCOL_INVALID_MESSAGE; the
+ *  unknown msg_type and replies SLURM_UNEXPECTED_MSG_ERROR; the
  *  listener stays alive and the peer port is unaffected.
 \*****************************************************************************/
 

@@ -292,7 +292,7 @@ int broker_init(void)
 	 *     sister PR to register the 4 ctld<->broker msg_types in
 	 *     src/common/ before real ctld traffic flows. Until that
 	 *     lands, slurm_receive_msg() rejects unknown msg_types with
-	 *     ESLURM_PROTOCOL_INVALID_MESSAGE; broker stays alive.
+	 *     SLURM_UNEXPECTED_MSG_ERROR; broker stays alive.
 	 *   - g_broker_conf.peer_port (8443): broker private wire frame
 	 *     for broker <-> broker traffic; independent of any
 	 *     slurmctld-side change.

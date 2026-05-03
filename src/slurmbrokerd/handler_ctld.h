@@ -16,7 +16,7 @@
  *
  *  Until the slurmctld-side PR registers the 4 ctld<->broker msg_type
  *  values in src/common/, slurm_receive_msg() will return
- *  ESLURM_PROTOCOL_INVALID_MESSAGE when a real ctld attempts to talk to
+ *  SLURM_UNEXPECTED_MSG_ERROR when a real ctld attempts to talk to
  *  the broker on 8442. The listener handles that gracefully and the
  *  broker stays up. Once the ctld PR lands and libslurm.so is rebuilt,
  *  these handler stubs become reachable; M06 fills in the real bodies.
@@ -33,8 +33,9 @@
  * Dispatch a fully-decoded ctld -> broker request. The listener has
  * already authenticated the connection (peer is SlurmUser on
  * 127.0.0.1) and called slurm_receive_msg() to populate msg->msg_type
- * and msg->data. The handler is responsible for sending an RC reply
- * via slurm_send_rc_msg() before returning so the ctld agent thread
+ * and msg->data. The handler is responsible for sending a reply
+ * (via slurm_send_node_msg() for typed responses or slurm_send_rc_msg()
+ * for plain return codes) before returning so the ctld agent thread
  * can collect the response.
  *
  * Ownership: msg.data is owned by msg; the listener calls
@@ -43,13 +44,23 @@
 extern void dispatch_ctld_msg(slurm_msg_t *msg);
 
 /*
- * Per-msg stubs (M06 fills in the real bodies). All four are wired into
- * dispatch_ctld_msg() in handler_ctld.c.
+ * Per-msg handlers (M06).
+ *
+ * Return value:
+ *   SLURM_SUCCESS       - handler completed; reply already sent.
+ *   SLURM_ERROR         - handler aborted before sending a reply (caller
+ *                         should send a generic RC failure on its behalf).
+ *
+ * The handlers themselves never throw; any business-level rejection
+ * (overload, no user mapping, ACL deny, duplicate trace_id, ...) is
+ * communicated to the ctld via the wire-level reply with a non-zero
+ * `error_code` field, while the function still returns SLURM_SUCCESS
+ * because the dispatch contract was honoured.
  *
  * Numeric msg_type values are slurmctld-side definitions (the broker
  * does not redefine them); see M04 §10.5 for the segment allocation.
  */
-extern void handle_forward_job(slurm_msg_t *msg);              /* 8001 */
-extern void handle_cancel_from_ctld(slurm_msg_t *msg);         /* 8016 */
+extern int handle_forward_job(slurm_msg_t *msg);              /* 8001 */
+extern int handle_cancel_from_ctld(slurm_msg_t *msg);         /* 8016 */
 
 #endif /* _BROKERD_HANDLER_CTLD_H */

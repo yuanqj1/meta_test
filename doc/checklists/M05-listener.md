@@ -251,7 +251,7 @@ done:
 - **预估**: 0.5d
 - **关键决策**:
   1. 大 switch + handler 函数指针表
-  2. 未知 msg_type → `slurm_send_rc_msg(&msg, SLURM_PROTOCOL_INVALID_MESSAGE)` 回错误
+  2. 未知 msg_type → `slurm_send_rc_msg(&msg, SLURM_UNEXPECTED_MSG_ERROR)` 回错误（Slurm 原生 errno 1000 段位，跨版本稳定；checklist 早稿曾误写 `SLURM_PROTOCOL_INVALID_MESSAGE`，那个符号在 Slurm 树里**并不存在**）
   3. 路由前打 `debug2` 日志（含来源 IP），方便排障
 - **代码草图**:
 
@@ -272,7 +272,7 @@ extern void dispatch_ctld_msg(slurm_msg_t *msg)
 	default:
 		error("dispatch_ctld: unknown msg_type %u from %s",
 		      msg->msg_type, addr_str);
-		slurm_send_rc_msg(msg, SLURM_PROTOCOL_INVALID_MESSAGE);
+		slurm_send_rc_msg(msg, SLURM_UNEXPECTED_MSG_ERROR);
 	}
 }
 
@@ -301,7 +301,7 @@ extern void dispatch_remote_msg(slurm_msg_t *msg)
 	default:
 		error("dispatch_remote: unknown msg_type %u from %s",
 		      msg->msg_type, addr_str);
-		slurm_send_rc_msg(msg, SLURM_PROTOCOL_INVALID_MESSAGE);
+		slurm_send_rc_msg(msg, SLURM_UNEXPECTED_MSG_ERROR);
 	}
 }
 ```
@@ -310,7 +310,7 @@ extern void dispatch_remote_msg(slurm_msg_t *msg)
   - 未知 msg_type 仍要释放 msg.data（slurm_free_msg_members 已处理）
   - default 不调 handler 时不能 abort 或 fatal
 - **DoD**:
-  - [ ] 未知 msg_type 客户端收到 ESLURM_PROTOCOL_INVALID_MESSAGE
+  - [ ] 未知 msg_type 客户端收到 SLURM_UNEXPECTED_MSG_ERROR
   - [ ] 已知 msg_type 走到对应 mock handler（在 M06/M07 还没实现时用 stub）
 
 ### M05-T4 ACL 与来源 IP 校验
@@ -426,7 +426,7 @@ echo "" | nc -w1 <broker_host> 8443; echo $?
 
 # 5) 未知 msg_type
 ./tests/broker/send_unknown_rpc 127.0.0.1 8442
-# 期望：客户端收到 ESLURM_PROTOCOL_INVALID_MESSAGE
+# 期望：客户端收到 SLURM_UNEXPECTED_MSG_ERROR
 
 # 6) shutdown
 kill -TERM $PID

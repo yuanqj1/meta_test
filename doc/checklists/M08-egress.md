@@ -179,7 +179,7 @@ static int _send_to_peer(uint16_t msg_type, void *req,
 		error("_send_to_peer: expected resp_type %u got %u",
 		      resp_type, resp_msg.msg_type);
 		slurm_free_msg_data(resp_msg.msg_type, resp_msg.data);
-		return SLURM_PROTOCOL_INVALID_MESSAGE;
+		return SLURM_UNEXPECTED_MSG_ERROR; /* Slurm errno 1000 段位 */
 	}
 
 	if (resp_out)
