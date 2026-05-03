@@ -40,6 +40,7 @@
 #include "proto.h"
 #include "slurmbrokerd.h"
 #include "state_machine.h"
+#include "sync_ticker.h"
 #include "user_mapping.h"
 
 #define DEFAULT_BROKER_CONF_PATH "/etc/slurm/broker.conf"
@@ -310,6 +311,18 @@ int broker_init(void)
 	}
 
 	/*
+	 * sync_ticker (ORIGINATOR-side 10s poll loop) MUST start AFTER
+	 * state_machine (it calls state_machine_transition) and AFTER
+	 * egress (egress_query_status_sync / ctld_update_remote_state).
+	 * Like state_machine it should be live before listener so any
+	 * job restored at boot starts being polled immediately.
+	 */
+	if (sync_ticker_start() != SLURM_SUCCESS) {
+		error("broker_init: sync_ticker_start failed");
+		return SLURM_ERROR;
+	}
+
+	/*
 	 * Listener brings up two listening sockets:
 	 *   - g_broker_conf.ctld_port (8442): slurm-native frame for
 	 *     ctld <-> broker traffic. Requires the slurmctld engineer's
@@ -331,9 +344,8 @@ int broker_init(void)
 	}
 
 	/* TODO M10-T1: stage_pool_start();                             */
-	/* TODO M13-T1: sync_ticker_start();                            */
 
-	debug("broker_init: M02/M03/M04/M05/M06/M07/M08/M09 ready (later sub-modules not wired yet)");
+	debug("broker_init: M02/M03/M04/M05/M06/M07/M08/M09/M13 ready (later sub-modules not wired yet)");
 	return SLURM_SUCCESS;
 }
 
@@ -346,7 +358,6 @@ int broker_init(void)
  */
 void broker_fini(void)
 {
-	/* TODO M13-T1: sync_ticker_stop();                             */
 	/* TODO M10-T1: stage_pool_stop();                              */
 
 	/* Stop the listener FIRST so no fresh inbound RPC can land while
@@ -354,6 +365,11 @@ void broker_fini(void)
 	 * holds no locks across its select() boundary, so this only
 	 * costs <= 1s (the select timeout). */
 	listener_stop();
+
+	/* sync_ticker next: it depends on egress + state_machine, both
+	 * of which we'll tear down right after. The wakeup pipe makes
+	 * stop return within ~1ms even mid-sleep. */
+	sync_ticker_stop();
 
 	/* State machine next: it may still call egress_*_async during a
 	 * final tick, but we need it gone before egress/proto are torn

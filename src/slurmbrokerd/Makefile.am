@@ -24,7 +24,8 @@ slurmbrokerd_SOURCES = \
 	handler_ctld.c handler_ctld.h \
 	handler_remote.c handler_remote.h \
 	egress.c egress.h \
-	state_machine.c state_machine.h
+	state_machine.c state_machine.h \
+	sync_ticker.c sync_ticker.h
 
 slurmbrokerd_DEPENDENCIES = $(LIB_SLURM_BUILD)
 slurmbrokerd_LDFLAGS = $(CMD_LDFLAGS)
