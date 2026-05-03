@@ -23,7 +23,8 @@ slurmbrokerd_SOURCES = \
 	listener.c listener.h \
 	handler_ctld.c handler_ctld.h \
 	handler_remote.c handler_remote.h \
-	egress.c egress.h
+	egress.c egress.h \
+	state_machine.c state_machine.h
 
 slurmbrokerd_DEPENDENCIES = $(LIB_SLURM_BUILD)
 slurmbrokerd_LDFLAGS = $(CMD_LDFLAGS)

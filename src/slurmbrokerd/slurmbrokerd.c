@@ -39,6 +39,7 @@
 #include "persist.h"
 #include "proto.h"
 #include "slurmbrokerd.h"
+#include "state_machine.h"
 #include "user_mapping.h"
 
 #define DEFAULT_BROKER_CONF_PATH "/etc/slurm/broker.conf"
@@ -297,6 +298,18 @@ int broker_init(void)
 	}
 
 	/*
+	 * State machine 1Hz tick MUST start AFTER egress (it calls
+	 * egress_*_async / ctld_inject_terminal_state from its action
+	 * queue) and AFTER broker_job_table is populated by restore. It
+	 * MUST start BEFORE listener so newly accepted RPCs that toggle
+	 * cancel_requested are observed within one tick.
+	 */
+	if (state_machine_start() != SLURM_SUCCESS) {
+		error("broker_init: state_machine_start failed");
+		return SLURM_ERROR;
+	}
+
+	/*
 	 * Listener brings up two listening sockets:
 	 *   - g_broker_conf.ctld_port (8442): slurm-native frame for
 	 *     ctld <-> broker traffic. Requires the slurmctld engineer's
@@ -317,11 +330,10 @@ int broker_init(void)
 		return SLURM_ERROR;
 	}
 
-	/* TODO M09-T1: state_machine_start();                          */
 	/* TODO M10-T1: stage_pool_start();                             */
 	/* TODO M13-T1: sync_ticker_start();                            */
 
-	debug("broker_init: M02/M03/M04/M05/M06/M07/M08 ready (later sub-modules not wired yet)");
+	debug("broker_init: M02/M03/M04/M05/M06/M07/M08/M09 ready (later sub-modules not wired yet)");
 	return SLURM_SUCCESS;
 }
 
@@ -336,13 +348,17 @@ void broker_fini(void)
 {
 	/* TODO M13-T1: sync_ticker_stop();                             */
 	/* TODO M10-T1: stage_pool_stop();                              */
-	/* TODO M09-T1: state_machine_stop();                           */
 
 	/* Stop the listener FIRST so no fresh inbound RPC can land while
 	 * downstream sub-modules are tearing down. The listener thread
 	 * holds no locks across its select() boundary, so this only
 	 * costs <= 1s (the select timeout). */
 	listener_stop();
+
+	/* State machine next: it may still call egress_*_async during a
+	 * final tick, but we need it gone before egress/proto are torn
+	 * down. The wakeup pipe makes stop return within ~1ms. */
+	state_machine_stop();
 
 	/* Egress is stateless besides its dependence on proto_init; tear
 	 * it down before proto_fini so any future egress side state
