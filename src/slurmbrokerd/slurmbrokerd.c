@@ -39,6 +39,7 @@
 #include "persist.h"
 #include "proto.h"
 #include "slurmbrokerd.h"
+#include "stage.h"
 #include "state_machine.h"
 #include "sync_ticker.h"
 #include "user_mapping.h"
@@ -311,9 +312,38 @@ int broker_init(void)
 	}
 
 	/*
+	 * Stage worker pool: rsync workers call back into
+	 * state_machine_transition + egress_staged_in_async after a
+	 * stage-in completes, so it must start AFTER both. It must also
+	 * be live before sync_ticker (which calls stage_submit_out) and
+	 * before listener (which feeds egress_forward_async ->
+	 * stage_submit_in).
+	 */
+	if (stage_pool_start() != SLURM_SUCCESS) {
+		error("broker_init: stage_pool_start failed");
+		return SLURM_ERROR;
+	}
+
+	/*
+	 * Recovery nudge for any STAGING_IN / STAGED_IN / STAGING_OUT
+	 * jobs that survived the previous broker process via the JSONL
+	 * checkpoint. Without this, restart latency would be bounded by
+	 * the M09 stage_timeout watchdog (default ~12 min) before any
+	 * retry kicks in. The nudge fast-forwards their state_enter_time
+	 * so the very next state_machine tick drives the retry path.
+	 *
+	 * Must run AFTER stage_pool_start so the retry actually has a
+	 * worker to land on; runs BEFORE listener so any user that
+	 * connects right after broker comes back up sees in-flight jobs
+	 * already moving.
+	 */
+	state_machine_resume_inflight();
+
+	/*
 	 * sync_ticker (ORIGINATOR-side 10s poll loop) MUST start AFTER
-	 * state_machine (it calls state_machine_transition) and AFTER
-	 * egress (egress_query_status_sync / ctld_update_remote_state).
+	 * state_machine (it calls state_machine_transition), AFTER
+	 * egress (egress_query_status_sync / ctld_update_remote_state),
+	 * and AFTER stage (it calls stage_submit_out on remote terminal).
 	 * Like state_machine it should be live before listener so any
 	 * job restored at boot starts being polled immediately.
 	 */
@@ -343,9 +373,7 @@ int broker_init(void)
 		return SLURM_ERROR;
 	}
 
-	/* TODO M10-T1: stage_pool_start();                             */
-
-	debug("broker_init: M02/M03/M04/M05/M06/M07/M08/M09/M13 ready (later sub-modules not wired yet)");
+	debug("broker_init: M02/M03/M04/M05/M06/M07/M08/M09/M10/M13 ready (later sub-modules not wired yet)");
 	return SLURM_SUCCESS;
 }
 
@@ -358,18 +386,23 @@ int broker_init(void)
  */
 void broker_fini(void)
 {
-	/* TODO M10-T1: stage_pool_stop();                              */
-
 	/* Stop the listener FIRST so no fresh inbound RPC can land while
 	 * downstream sub-modules are tearing down. The listener thread
 	 * holds no locks across its select() boundary, so this only
 	 * costs <= 1s (the select timeout). */
 	listener_stop();
 
-	/* sync_ticker next: it depends on egress + state_machine, both
-	 * of which we'll tear down right after. The wakeup pipe makes
+	/* sync_ticker next: it depends on egress + state_machine + stage,
+	 * all of which we'll tear down right after. The wakeup pipe makes
 	 * stop return within ~1ms even mid-sleep. */
 	sync_ticker_stop();
+
+	/* Stage workers next: they call back into state_machine and
+	 * egress on completion, so they must drain before either is
+	 * stopped. Note: workers currently inside waitpid(rsync) will
+	 * not exit until the rsync child returns (or hits its 1h safety
+	 * timeout), so shutdown can be slow on a busy broker. */
+	stage_pool_stop();
 
 	/* State machine next: it may still call egress_*_async during a
 	 * final tick, but we need it gone before egress/proto are torn

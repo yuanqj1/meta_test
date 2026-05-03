@@ -128,6 +128,66 @@ static void _enqueue_remove(sm_tick_ctx_t *ctx, const char *trace_id)
  *                       transition (public)
 \*****************************************************************************/
 
+/*****************************************************************************\
+ *                       resume after restore (public)
+ *
+ * The fast-forward trick: subtract (timeout - SM_RESUME_GRACE) seconds
+ * from state_enter_time so _on_staging_in / _on_staged_in / _on_staging_out
+ * see "almost timed out" on their very next tick and immediately drive
+ * the retry path. This avoids the user-visible "broker just restarted,
+ * why is my job stuck for 12 minutes" surprise.
+\*****************************************************************************/
+
+#define SM_RESUME_GRACE_SECS  5
+
+/* Forward decl: defined in the per-state helpers section below. */
+static int _stage_timeout_secs(void);
+
+typedef struct {
+	time_t now;
+	uint32_t kicked;
+} _resume_ctx_t;
+
+static int _resume_inflight_cb(broker_job_t *j, void *arg)
+{
+	_resume_ctx_t *ctx = arg;
+	int timeout_s = 0;
+
+	switch (j->state) {
+	case BROKER_STATE_STAGING_IN:
+	case BROKER_STATE_STAGING_OUT:
+		timeout_s = _stage_timeout_secs();
+		break;
+	case BROKER_STATE_STAGED_IN:
+		timeout_s = SM_STAGED_IN_RETRY_INT_S;
+		break;
+	default:
+		return 0;
+	}
+
+	/* Fast-forward state_enter_time so the next tick body sees the
+	 * watchdog as essentially expired. We keep a small grace window
+	 * (SM_RESUME_GRACE_SECS) so the very first post-restart tick
+	 * doesn't trigger before stage_pool / egress have warmed up. */
+	slurm_mutex_lock(&j->lock);
+	j->state_enter_time = ctx->now - timeout_s + SM_RESUME_GRACE_SECS;
+	slurm_mutex_unlock(&j->lock);
+	ctx->kicked++;
+	return 0;
+}
+
+void state_machine_resume_inflight(void)
+{
+	_resume_ctx_t ctx = { .now = time(NULL), .kicked = 0 };
+
+	broker_job_table_foreach(_resume_inflight_cb, &ctx);
+	if (ctx.kicked)
+		info("state_machine: fast-forwarded %u in-flight stage job(s) for retry",
+		     ctx.kicked);
+	else
+		debug("state_machine: no in-flight stage jobs to resume");
+}
+
 void state_machine_transition(broker_job_t *job, broker_job_state_t to,
 			      const char *reason)
 {

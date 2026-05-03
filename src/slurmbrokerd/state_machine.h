@@ -96,4 +96,37 @@ extern void state_machine_transition(broker_job_t *job,
 				     broker_job_state_t to,
 				     const char *reason);
 
+/*****************************************************************************\
+ *                       restart helpers
+\*****************************************************************************/
+
+/*
+ * Right after broker_state_restore() rebuilds the table from the JSONL
+ * checkpoint, every still-in-flight stage job (STAGING_IN /
+ * STAGED_IN / STAGING_OUT) carries its OLD state_enter_time -- which
+ * means the next state_machine tick would patiently wait the full
+ * stage_timeout (~12 minutes) before retrying, even though the prior
+ * broker process clearly died mid-stage.
+ *
+ * This helper fast-forwards state_enter_time so the very next tick
+ * (or the one after) immediately drops into the retry path:
+ *
+ *   STAGING_IN  -> _on_staging_in retry  (transition INIT, retry forward
+ *                                         + stage_submit_in)
+ *   STAGED_IN   -> _on_staged_in retry   (re-send STAGED_IN msg)
+ *   STAGING_OUT -> _on_staging_out retry (currently a no-op nudge,
+ *                                         see TODO M10-T2 inside)
+ *
+ * Does NOT reset retry_count; a job that was already at retry_count == 3
+ * will be transitioned to FAILED on the next tick, which is the right
+ * call (we shouldn't pretend a restart resets the historical failure
+ * record).
+ *
+ * MUST be called AFTER broker_state_restore() and AFTER
+ * state_machine_start() so the global table is populated and the tick
+ * thread is alive. Conventionally invoked by broker_init() between
+ * stage_pool_start() and sync_ticker_start().
+ */
+extern void state_machine_resume_inflight(void);
+
 #endif /* _BROKERD_STATE_MACHINE_H */

@@ -39,6 +39,7 @@
 #include "broker_job.h"
 #include "egress.h"
 #include "proto.h"
+#include "stage.h"
 #include "state_machine.h"
 #include "sync_ticker.h"
 
@@ -204,18 +205,20 @@ static void _apply_remote_status(brokerd_broker_status_entry_t *e)
 		if (saw_state == BROKER_STATE_RUNNING ||
 		    saw_state == BROKER_STATE_SUBMITTED) {
 			/*
-			 * TODO M10-T2: kick off reverse rsync via
-			 * stage_pool_submit_out(job). For now we just move
-			 * to STAGING_OUT; M09 _on_staging_out's retry/
-			 * timeout will eventually FAILED if the stage
-			 * actually never starts.
+			 * Move to STAGING_OUT FIRST so any concurrent state
+			 * machine tick observes the new state before the
+			 * stage worker runs (avoids racing on the
+			 * "transition COMPLETED on stage-out success" step).
+			 * Then enqueue the reverse-direction rsync.
+			 *
+			 * No UPDATE push here: the terminal push happens
+			 * inside state_machine _on_terminal once stage-out
+			 * completes and transitions us to COMPLETED.
 			 */
 			state_machine_transition(job,
 						 BROKER_STATE_STAGING_OUT,
 						 NULL);
-			/* Don't push UPDATE here - the terminal-state push
-			 * comes once we reach BROKER_STATE_COMPLETED via
-			 * state_machine _on_terminal -> ctld_inject. */
+			(void) stage_submit_out(job);
 		}
 		break;
 

@@ -64,6 +64,7 @@
 #include "handler_remote.h"
 #include "persist.h"
 #include "proto.h"
+#include "rewrite.h"
 #include "user_mapping.h"
 
 #define DST_WORK_DIR_PREFIX     "/work/home/"  /* template root */
@@ -294,7 +295,8 @@ static uint32_t _parse_sbatch_jobid(const char *line)
  * success *out_jobid is the remote_job_id; on any failure returns
  * SLURM_ERROR with *out_jobid = 0.
  */
-static int _sudo_sbatch(broker_job_t *job, uint32_t *out_jobid)
+static int _sudo_sbatch(broker_job_t *job, const char *script_to_submit,
+			uint32_t *out_jobid)
 {
 	int pipefd[2] = { -1, -1 };
 	pid_t pid;
@@ -302,6 +304,7 @@ static int _sudo_sbatch(broker_job_t *job, uint32_t *out_jobid)
 	ssize_t n;
 	const char *script_basename;
 	char *script_full = NULL;
+	const char *script_arg;
 
 	*out_jobid = 0;
 
@@ -312,14 +315,25 @@ static int _sudo_sbatch(broker_job_t *job, uint32_t *out_jobid)
 		return SLURM_ERROR;
 	}
 
-	script_basename = _path_basename(job->script_path);
-	if (!*script_basename) {
-		error("%s: empty basename(script_path) for trace_id=%s",
-		      __func__, job->trace_id);
-		return SLURM_ERROR;
+	/*
+	 * Caller may hand us a pre-rewritten script (M12 rewrite output,
+	 * usually <dst_work_dir>/<basename>.cd_modified.sh). When NULL we
+	 * fall back to the originator's original file under dst_work_dir
+	 * -- M07 path before M12 was wired in.
+	 */
+	if (script_to_submit && *script_to_submit) {
+		script_arg = script_to_submit;
+	} else {
+		script_basename = _path_basename(job->script_path);
+		if (!*script_basename) {
+			error("%s: empty basename(script_path) for trace_id=%s",
+			      __func__, job->trace_id);
+			return SLURM_ERROR;
+		}
+		xstrfmtcat(script_full, "%s/%s",
+			   job->dst_work_dir, script_basename);
+		script_arg = script_full;
 	}
-	xstrfmtcat(script_full, "%s/%s",
-		   job->dst_work_dir, script_basename);
 
 	if (pipe(pipefd) < 0) {
 		error("%s: pipe: %m", __func__);
@@ -352,7 +366,7 @@ static int _sudo_sbatch(broker_job_t *job, uint32_t *out_jobid)
 				"--chdir=%s", job->dst_work_dir);
 		execl(SUDO_BIN, "sudo", "-n", "-u", job->remote_user_name,
 		      "sbatch", part_arg, chdir_arg, "--parsable",
-		      script_full, (char *) NULL);
+		      script_arg, (char *) NULL);
 		_exit(127);
 	}
 
@@ -625,26 +639,55 @@ int handle_broker_staged_in(void *payload, int conn_fd)
 	}
 
 	/*
-	 * TODO M12-T1: rewrite_job_script(job) - rewrite the staged
-	 * script's `source ...` lines using lookup_software.sh
-	 * <remote_cluster> <app_name> before invoking sbatch. M07
-	 * intentionally submits the unmodified script so this PR can be
-	 * verified end-to-end before M12 lands.
+	 * M12: rewrite the staged script before sbatch.
+	 *   - drops site-specific SBATCH directives (--reservation,
+	 *     --cross-domain, --app, --account)
+	 *   - rewrites partition to job->target_partition
+	 *   - if lookup_software_script is configured AND both clusters
+	 *     resolve, also rewrites the source-line install path prefix
+	 *
+	 * Best-effort: rewrite_job_script returns SLURM_ERROR only on
+	 * filesystem failures (e.g. dst_work_dir missing), in which case
+	 * we treat the job as un-submittable. SBATCH-only success (path
+	 * lookup unavailable) returns SLURM_SUCCESS and we sbatch the
+	 * cleaned script anyway.
 	 */
+	{
+		char *modified_script = NULL;
+		int rw_rc = rewrite_job_script(job, &modified_script);
 
-	if (_sudo_sbatch(job, &remote_job_id) != SLURM_SUCCESS ||
-	    !remote_job_id) {
-		error("handle_broker_staged_in: sbatch failed for trace_id=%s",
-		      m->trace_id);
-		broker_job_set_state(job, BROKER_STATE_FAILED,
-				     "sbatch failed");
-		persist_async_request();
-		_send_broker_submitted(conn_fd,
-				       BROKERD_ERR_REMOTE_SUBMIT_FAILED,
-				       m->trace_id, 0);
-		brokerd_free_msg_data(BROKERD_REQUEST_BROKER_STAGED_IN,
-				      payload);
-		return SLURM_SUCCESS;
+		if (rw_rc != SLURM_SUCCESS) {
+			error("handle_broker_staged_in: rewrite failed for trace_id=%s",
+			      m->trace_id);
+			broker_job_set_state(job, BROKER_STATE_FAILED,
+					     "script rewrite failed");
+			persist_async_request();
+			_send_broker_submitted(conn_fd,
+					       BROKERD_ERR_LOOKUP_FAILED,
+					       m->trace_id, 0);
+			xfree(modified_script);
+			brokerd_free_msg_data(
+				BROKERD_REQUEST_BROKER_STAGED_IN, payload);
+			return SLURM_SUCCESS;
+		}
+
+		if (_sudo_sbatch(job, modified_script, &remote_job_id)
+		    != SLURM_SUCCESS || !remote_job_id) {
+			error("handle_broker_staged_in: sbatch failed for trace_id=%s (script=%s)",
+			      m->trace_id,
+			      modified_script ? modified_script : "(default)");
+			broker_job_set_state(job, BROKER_STATE_FAILED,
+					     "sbatch failed");
+			persist_async_request();
+			_send_broker_submitted(conn_fd,
+					       BROKERD_ERR_REMOTE_SUBMIT_FAILED,
+					       m->trace_id, 0);
+			xfree(modified_script);
+			brokerd_free_msg_data(
+				BROKERD_REQUEST_BROKER_STAGED_IN, payload);
+			return SLURM_SUCCESS;
+		}
+		xfree(modified_script);
 	}
 
 	slurm_mutex_lock(&job->lock);

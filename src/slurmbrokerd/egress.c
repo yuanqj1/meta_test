@@ -53,6 +53,7 @@
 #include "egress.h"
 #include "persist.h"
 #include "proto.h"
+#include "stage.h"
 
 /*****************************************************************************\
  *                       generic retry helper
@@ -221,13 +222,16 @@ int egress_forward_async(broker_job_t *job)
 	persist_async_request();
 
 	/*
-	 * TODO M10-T1: kick off rsync via stage_pool_submit_in(job).
-	 * Until M10 lands, the state machine periodic tick will poll
-	 * STAGING_IN jobs and fall through to a no-op; nothing in M08
-	 * blocks on M10.
+	 * Hand the job off to the rsync worker pool. The worker will
+	 * eventually transition to STAGED_IN and call
+	 * egress_staged_in_async() on success, or leave the job in
+	 * STAGING_IN for the M09 timeout-and-retry watchdog on failure.
+	 * Note: stage_submit_in() may itself transition the job to
+	 * FAILED if the du -sb pre-flight exceeds max_stage_bytes.
 	 */
+	(void) stage_submit_in(job);
 
-	info("egress_forward: trace_id=%s forwarded to peer, dst=%s",
+	info("egress_forward: trace_id=%s forwarded to peer, dst=%s, stage-in queued",
 	     job->trace_id,
 	     job->dst_work_dir ? job->dst_work_dir : "(none)");
 	return SLURM_SUCCESS;
