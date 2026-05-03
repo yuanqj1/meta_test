@@ -117,6 +117,21 @@ void broker_job_destroy(broker_job_t *job)
 	xfree(job);
 }
 
+void broker_job_set_state(broker_job_t *job, broker_job_state_t new_state,
+			  const char *reason)
+{
+	if (!job)
+		return;
+
+	slurm_mutex_lock(&job->lock);
+	job->state            = new_state;
+	job->state_enter_time = time(NULL);
+	xfree(job->state_reason);
+	if (reason && *reason)
+		job->state_reason = xstrdup(reason);
+	slurm_mutex_unlock(&job->lock);
+}
+
 /*****************************************************************************\
  *                         table CRUD
 \*****************************************************************************/

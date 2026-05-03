@@ -134,6 +134,22 @@ extern void broker_job_table_fini(void);
 extern broker_job_t *broker_job_create(void);
 extern void          broker_job_destroy(broker_job_t *job);
 
+/*
+ * Atomically transition a job to a new state.
+ *   - takes job->lock for the duration
+ *   - bumps state_enter_time
+ *   - replaces job->state_reason (NULL clears it; non-NULL string is
+ *     xstrdup'd, so the caller keeps ownership of the input)
+ *
+ * MVP placeholder: the full state machine in M09 will subsume this and
+ * add side effects (egress hooks, persist_async_request, etc). Until
+ * then, M07 handlers call this directly to record RECEIVER-side state
+ * progression.
+ */
+extern void          broker_job_set_state(broker_job_t *job,
+					   broker_job_state_t new_state,
+					   const char *reason);
+
 /* table CRUD (all internally locked) */
 extern int          broker_job_table_add(broker_job_t *job);
 extern broker_job_t *broker_job_table_get(const char *trace_id);
