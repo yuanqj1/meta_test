@@ -39,7 +39,6 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <pthread.h>
-#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -47,7 +46,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include "slurm/slurm.h"
@@ -65,6 +63,7 @@
 #include "persist.h"
 #include "stage.h"
 #include "state_machine.h"
+#include "util_exec.h"
 
 /*****************************************************************************\
  *                       module-local state
@@ -95,48 +94,6 @@ static int              n_workers;
 static volatile bool    stage_running       = false;
 static bool             stage_pool_active   = false;
 static bool             stage_mutex_inited  = false;
-
-/*****************************************************************************\
- *                       fork+exec helpers
-\*****************************************************************************/
-
-/*
- * waitpid with a wall-clock timeout. On timeout SIGKILL the child and
- * reap. Returns the child's exit status (>= 0) on normal exit, -1 on
- * any failure / timeout / signal kill.
- */
-static int _waitpid_timeout(pid_t pid, int timeout_s)
-{
-	int wstat = 0;
-	int slept_us = 0;
-	const int step_us = 100 * 1000;
-	const int budget_us = timeout_s * 1000 * 1000;
-
-	while (slept_us < budget_us) {
-		pid_t r = waitpid(pid, &wstat, WNOHANG);
-
-		if (r == pid)
-			break;
-		if (r < 0 && errno != EINTR) {
-			error("%s: waitpid: %m", __func__);
-			return -1;
-		}
-		usleep(step_us);
-		slept_us += step_us;
-	}
-
-	if (slept_us >= budget_us) {
-		warning("%s: child pid=%d exceeded %ds timeout, sending SIGKILL",
-		        __func__, (int) pid, timeout_s);
-		(void) kill(pid, SIGKILL);
-		(void) waitpid(pid, &wstat, 0);
-		return -1;
-	}
-
-	if (!WIFEXITED(wstat))
-		return -1;
-	return WEXITSTATUS(wstat);
-}
 
 /*****************************************************************************\
  *                       du -sb estimator (M10-T4)
@@ -199,7 +156,7 @@ static uint64_t _du_sb(const char *user, const char *path)
 	buf[off] = '\0';
 	(void) close(pipefd[0]);
 
-	rc = _waitpid_timeout(pid, 60);
+	rc = brokerd_waitpid_timeout(pid, 60);
 	if (rc != 0) {
 		debug("%s: du failed for user=%s path=%s rc=%d",
 		      __func__, user, path, rc);
@@ -370,7 +327,7 @@ static int _exec_rsync(broker_job_t *job, stage_dir_t dir)
 	}
 
 	_free_argv(argv);
-	rc = _waitpid_timeout(pid, STAGE_CHILD_TIMEOUT_S);
+	rc = brokerd_waitpid_timeout(pid, STAGE_CHILD_TIMEOUT_S);
 	return rc;
 }
 

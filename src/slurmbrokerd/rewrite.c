@@ -26,16 +26,12 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <inttypes.h>
-#include <signal.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include "slurm/slurm.h"
@@ -46,166 +42,11 @@
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
 
-#include "broker_conf.h"
 #include "broker_job.h"
 #include "rewrite.h"
+#include "software.h"
 
-#define LOOKUP_TIMEOUT_DEFAULT_S  10
 #define MODIFIED_SUFFIX           ".cd_modified.sh"
-
-/*****************************************************************************\
- *                       waitpid + timeout (private copy)
- *
- * Same shape as handler_remote.c / stage.c; duplicated rather than
- * abstracted to keep modules independent. If a third caller ever
- * appears we'll factor this into a small helper module.
-\*****************************************************************************/
-
-static int _waitpid_timeout(pid_t pid, int timeout_s)
-{
-	int wstat = 0;
-	int slept_us = 0;
-	const int step_us = 100 * 1000;
-	const int budget_us = timeout_s * 1000 * 1000;
-
-	while (slept_us < budget_us) {
-		pid_t r = waitpid(pid, &wstat, WNOHANG);
-
-		if (r == pid)
-			break;
-		if (r < 0 && errno != EINTR) {
-			error("rewrite: waitpid: %m");
-			return -1;
-		}
-		usleep(step_us);
-		slept_us += step_us;
-	}
-
-	if (slept_us >= budget_us) {
-		warning("rewrite: child pid=%d exceeded %ds timeout, sending SIGKILL",
-		        (int) pid, timeout_s);
-		(void) kill(pid, SIGKILL);
-		(void) waitpid(pid, &wstat, 0);
-		return -1;
-	}
-	if (!WIFEXITED(wstat))
-		return -1;
-	return WEXITSTATUS(wstat);
-}
-
-/*****************************************************************************\
- *                       _lookup_software_path
- *
- * Run "<lookup_software_script> <cluster> <app>", capture the first
- * line of stdout (newline-trimmed) into *out (xstrdup'd).
- *
- * Returns:
- *   SLURM_SUCCESS  - *out points at the resolved path
- *   SLURM_ERROR    - script unset / fork failed / non-zero exit / no
- *                    parseable output. Caller treats this as "unknown,
- *                    skip path substitution".
-\*****************************************************************************/
-
-static int _lookup_software_path(const char *cluster, const char *app,
-				 char **out)
-{
-	int pipefd[2] = { -1, -1 };
-	pid_t pid;
-	char buf[1024];
-	size_t off = 0;
-	int rc, timeout_s;
-	char *p;
-
-	*out = NULL;
-
-	if (!cluster || !*cluster || !app || !*app) {
-		debug("rewrite: lookup skipped (cluster='%s' app='%s')",
-		      cluster ? cluster : "(null)",
-		      app ? app : "(null)");
-		return SLURM_ERROR;
-	}
-	if (!g_broker_conf.lookup_software_script ||
-	    !*g_broker_conf.lookup_software_script) {
-		debug("rewrite: lookup_software_script not configured, skip");
-		return SLURM_ERROR;
-	}
-
-	if (pipe(pipefd) < 0) {
-		error("rewrite: pipe: %m");
-		return SLURM_ERROR;
-	}
-
-	pid = fork();
-	if (pid < 0) {
-		error("rewrite: fork: %m");
-		(void) close(pipefd[0]);
-		(void) close(pipefd[1]);
-		return SLURM_ERROR;
-	}
-	if (pid == 0) {
-		(void) close(pipefd[0]);
-		if (pipefd[1] != STDOUT_FILENO) {
-			(void) dup2(pipefd[1], STDOUT_FILENO);
-			(void) close(pipefd[1]);
-		}
-		/* leave stderr attached to the broker journal so lookup
-		 * script error messages reach the operator */
-		execl(g_broker_conf.lookup_software_script,
-		      g_broker_conf.lookup_software_script,
-		      cluster, app, (char *) NULL);
-		_exit(127);
-	}
-
-	(void) close(pipefd[1]);
-	memset(buf, 0, sizeof(buf));
-	while (off + 1 < sizeof(buf)) {
-		ssize_t n = read(pipefd[0], buf + off, sizeof(buf) - 1 - off);
-
-		if (n > 0)
-			off += (size_t) n;
-		else if (n == 0)
-			break;
-		else if (errno == EINTR)
-			continue;
-		else
-			break;
-	}
-	buf[off] = '\0';
-	(void) close(pipefd[0]);
-
-	timeout_s = (int) g_broker_conf.lookup_timeout_sec;
-	if (timeout_s <= 0)
-		timeout_s = LOOKUP_TIMEOUT_DEFAULT_S;
-
-	rc = _waitpid_timeout(pid, timeout_s);
-	if (rc != 0) {
-		debug("rewrite: lookup_software(%s, %s) rc=%d",
-		      cluster, app, rc);
-		return SLURM_ERROR;
-	}
-
-	/* Trim trailing whitespace / newline; consume only the first
-	 * line. The script convention is one absolute path per line,
-	 * primary line first. */
-	p = strpbrk(buf, "\r\n");
-	if (p)
-		*p = '\0';
-	for (p = buf + strlen(buf); p > buf; p--) {
-		if (!isspace((unsigned char) p[-1]))
-			break;
-		p[-1] = '\0';
-	}
-	if (!buf[0]) {
-		debug("rewrite: lookup_software(%s, %s) returned empty",
-		      cluster, app);
-		return SLURM_ERROR;
-	}
-
-	*out = xstrdup(buf);
-	debug("rewrite: lookup_software(%s, %s) -> %s",
-	      cluster, app, *out);
-	return SLURM_SUCCESS;
-}
 
 /*****************************************************************************\
  *                       per-line SBATCH helpers
@@ -561,10 +402,10 @@ int rewrite_job_script(broker_job_t *job, char **out_modified_path)
 					  job->target_partition);
 
 	/* 3. Best-effort path substitution. lookup failure is non-fatal. */
-	(void) _lookup_software_path(job->src_cluster, job->app_name,
-				     &src_root);
-	(void) _lookup_software_path(job->dst_cluster, job->app_name,
-				     &dst_root);
+	(void) lookup_software_path(job->src_cluster, job->app_name,
+				    &src_root);
+	(void) lookup_software_path(job->dst_cluster, job->app_name,
+				    &dst_root);
 
 	if (src_root && dst_root && xstrcmp(src_root, dst_root)) {
 		final_text = _substitute_all(post_line, src_root, dst_root);

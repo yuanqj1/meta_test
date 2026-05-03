@@ -1,0 +1,61 @@
+#!/bin/bash
+# lookup_software.sh - example helper invoked by slurmbrokerd to resolve
+# <cluster, app> -> absolute install path.
+#
+# Deploy:
+#   cp etc/lookup_software.sh.example /opt/slurm-broker/scripts/lookup_software.sh
+#   chmod 0755 /opt/slurm-broker/scripts/lookup_software.sh
+#   cp etc/software_routes.conf.example /etc/slurm-broker/software_routes.conf
+#
+# broker.conf settings:
+#   LookupSoftwareScript=/opt/slurm-broker/scripts/lookup_software.sh
+#   LookupTimeoutSec=10
+#
+# Contract (do NOT change without also updating src/slurmbrokerd/software.c):
+#   argv[1] = <cluster>
+#   argv[2] = <app>
+#   stdout  = first line is the resolved absolute install path
+#   exit 0  = success
+#   exit 2  = unknown cluster/app or missing config
+#   exit *  = treated as failure
+#
+# This template is intentionally simple so that operators can replace it
+# with any inventory/CMDB lookup (etcd, consul, REST, etc.) without
+# touching the broker.
+
+set -euo pipefail
+
+CLUSTER="${1:-}"
+APP="${2:-}"
+CONF="${BROKER_CONF_DIR:-/etc/slurm-broker}/software_routes.conf"
+
+if [[ -z "${CLUSTER}" || -z "${APP}" ]]; then
+    echo "lookup_software.sh: usage: $0 <cluster> <app>" >&2
+    exit 2
+fi
+
+if [[ ! -r "${CONF}" ]]; then
+    echo "lookup_software.sh: ${CONF} not readable" >&2
+    exit 2
+fi
+
+# Line format (see software_routes.conf.example):
+#   <cluster>:<app>=<absolute_path>
+LINE=$(grep -E "^${CLUSTER}:${APP}=" "${CONF}" | tail -n 1 || true)
+if [[ -z "${LINE}" ]]; then
+    echo "lookup_software.sh: no entry for ${CLUSTER}:${APP} in ${CONF}" >&2
+    exit 2
+fi
+
+PATH_OUT="${LINE#*=}"
+if [[ -z "${PATH_OUT}" ]]; then
+    echo "lookup_software.sh: empty value for ${CLUSTER}:${APP}" >&2
+    exit 2
+fi
+
+if [[ "${PATH_OUT:0:1}" != "/" ]]; then
+    echo "lookup_software.sh: '${PATH_OUT}' is not an absolute path" >&2
+    exit 2
+fi
+
+echo "${PATH_OUT}"

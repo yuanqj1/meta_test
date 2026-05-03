@@ -1,0 +1,29 @@
+# /etc/slurm-broker/software_routes.conf
+#
+# Routing table consumed by lookup_software.sh (M11). Each entry maps a
+# <cluster, app> pair to the install root on that cluster. The broker
+# uses these prefixes to rewrite "module load" / "source ..." paths in
+# user sbatch scripts before submitting them on the receiver cluster.
+#
+# Format (one entry per line):
+#   <cluster>:<app>=<absolute_path>
+#
+# - Comment lines starting with `#` are ignored by lookup_software.sh.
+# - The right-hand side MUST be an absolute path (start with `/`).
+# - If the same key appears twice, the LAST occurrence wins (so you can
+#   override entries by appending without editing existing rows).
+# - The cluster name must match exactly the value used in the broker
+#   peer configuration (broker.conf::LocalClusterName /
+#   RemoteClusterName).
+
+# --- example: GROMACS ---
+wz_cluster:gromacs=/opt/apps/gromacs-2024.1
+xian_cluster:gromacs=/opt/apps/gromacs-2024.1
+
+# --- example: LAMMPS ---
+wz_cluster:lammps=/opt/apps/lammps-29Aug2024
+xian_cluster:lammps=/opt/apps/lammps-29Aug2024
+
+# --- example: in-house python env ---
+wz_cluster:py-base=/opt/apps/python-3.11/wz
+xian_cluster:py-base=/opt/apps/python-3.11/xian

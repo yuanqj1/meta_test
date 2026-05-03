@@ -27,7 +27,9 @@ slurmbrokerd_SOURCES = \
 	state_machine.c state_machine.h \
 	sync_ticker.c sync_ticker.h \
 	stage.c stage.h \
-	rewrite.c rewrite.h
+	rewrite.c rewrite.h \
+	software.c software.h \
+	util_exec.c util_exec.h
 
 slurmbrokerd_DEPENDENCIES = $(LIB_SLURM_BUILD)
 slurmbrokerd_LDFLAGS = $(CMD_LDFLAGS)

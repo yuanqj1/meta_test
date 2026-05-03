@@ -46,7 +46,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include "slurm/slurm.h"
@@ -66,6 +65,7 @@
 #include "proto.h"
 #include "rewrite.h"
 #include "user_mapping.h"
+#include "util_exec.h"
 
 #define DST_WORK_DIR_PREFIX     "/work/home/"  /* template root */
 #define SUDO_BIN                "/usr/bin/sudo"
@@ -159,52 +159,12 @@ static bool _dst_work_dir_safe(const char *path)
 
 /*****************************************************************************\
  *                       fork+exec helpers
+ *
+ * The waitpid-with-timeout primitive lives in util_exec.h
+ * (brokerd_waitpid_timeout). Per-call sites only need to map the
+ * "exit status 0 vs anything else" semantics into Slurm's
+ * SLURM_SUCCESS / SLURM_ERROR.
 \*****************************************************************************/
-
-/*
- * Wait for `pid` for at most `timeout_s` seconds; on timeout SIGKILL
- * and reap. Returns SLURM_SUCCESS only when the child exited normally
- * with status 0.
- */
-static int _waitpid_timeout(pid_t pid, int timeout_s)
-{
-	int wstat = 0;
-	int slept_us = 0;
-	const int step_us = 100 * 1000; /* 100ms */
-	const int budget_us = timeout_s * 1000 * 1000;
-
-	while (slept_us < budget_us) {
-		pid_t r = waitpid(pid, &wstat, WNOHANG);
-
-		if (r == pid)
-			break;
-		if (r < 0 && errno != EINTR) {
-			error("%s: waitpid: %m", __func__);
-			return SLURM_ERROR;
-		}
-		usleep(step_us);
-		slept_us += step_us;
-	}
-
-	if (slept_us >= budget_us) {
-		warning("%s: child pid=%d exceeded %ds timeout, sending SIGKILL",
-		        __func__, (int) pid, timeout_s);
-		(void) kill(pid, SIGKILL);
-		(void) waitpid(pid, &wstat, 0);
-		return SLURM_ERROR;
-	}
-
-	if (!WIFEXITED(wstat)) {
-		error("%s: child pid=%d killed by signal", __func__, (int) pid);
-		return SLURM_ERROR;
-	}
-	if (WEXITSTATUS(wstat) != 0) {
-		error("%s: child pid=%d exited with status=%d",
-		      __func__, (int) pid, WEXITSTATUS(wstat));
-		return SLURM_ERROR;
-	}
-	return SLURM_SUCCESS;
-}
 
 /*
  * Run "sudo -u <remote_user> /bin/sh -c 'mkdir -p <dir> && chmod 700 <dir>'".
@@ -235,7 +195,8 @@ static int _create_dst_work_dir(const char *remote_user, const char *dir)
 		      "_brokerd_mkdir", dir, (char *) NULL);
 		_exit(127);
 	}
-	return _waitpid_timeout(pid, MKDIR_CHILD_TIMEOUT_S);
+	return brokerd_waitpid_timeout(pid, MKDIR_CHILD_TIMEOUT_S) == 0
+		? SLURM_SUCCESS : SLURM_ERROR;
 }
 
 /*
@@ -262,7 +223,8 @@ static int _exec_sudo_rm_rf(const char *remote_user, const char *dir)
 		      "/bin/rm", "-rf", dir, (char *) NULL);
 		_exit(127);
 	}
-	return _waitpid_timeout(pid, RM_CHILD_TIMEOUT_S);
+	return brokerd_waitpid_timeout(pid, RM_CHILD_TIMEOUT_S) == 0
+		? SLURM_SUCCESS : SLURM_ERROR;
 }
 
 /*
@@ -390,7 +352,7 @@ static int _sudo_sbatch(broker_job_t *job, const char *script_to_submit,
 	}
 	(void) close(pipefd[0]);
 
-	if (_waitpid_timeout(pid, SBATCH_CHILD_TIMEOUT_S) != SLURM_SUCCESS) {
+	if (brokerd_waitpid_timeout(pid, SBATCH_CHILD_TIMEOUT_S) != 0) {
 		xfree(script_full);
 		return SLURM_ERROR;
 	}
