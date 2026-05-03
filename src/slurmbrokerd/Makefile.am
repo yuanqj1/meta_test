@@ -17,7 +17,12 @@ slurmbrokerd_SOURCES = \
 	broker_conf.c broker_conf.h \
 	user_mapping.c user_mapping.h \
 	broker_job.c broker_job.h \
-	persist.c persist.h
+	persist.c persist.h \
+	proto.c proto.h \
+	proto_pack.c \
+	listener.c listener.h \
+	handler_ctld.c handler_ctld.h \
+	handler_remote.c handler_remote.h
 
 slurmbrokerd_DEPENDENCIES = $(LIB_SLURM_BUILD)
 slurmbrokerd_LDFLAGS = $(CMD_LDFLAGS)

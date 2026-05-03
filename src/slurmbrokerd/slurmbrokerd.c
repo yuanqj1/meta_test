@@ -34,7 +34,9 @@
 
 #include "broker_conf.h"
 #include "broker_job.h"
+#include "listener.h"
 #include "persist.h"
+#include "proto.h"
 #include "slurmbrokerd.h"
 #include "user_mapping.h"
 
@@ -51,6 +53,10 @@ broker_argv_opts_t g_argv_opts = {
 	.conf_path = NULL,
 	.verbose = 0,
 };
+
+/* Tracks whether slurm_init() has actually been invoked, so that
+ * broker_fini() can safely skip slurm_fini() on early init failures. */
+static bool g_slurm_inited = false;
 
 static void _usage(void)
 {
@@ -247,10 +253,16 @@ int broker_init(void)
 	broker_conf_log_summary();
 
 	/*
-	 * The serializer plugin is needed by broker_job_from_json() during
-	 * restore; load it before the table is touched. persist_thread_start
-	 * idempotently re-loads it later, which is harmless.
+	 * Bring up the libslurm subsystems we depend on:
+	 *   - slurm_init(NULL) wires conf + auth/cred/tls/hash/etc plugins;
+	 *     auth_g_create/pack/unpack inside proto.c require this.
+	 *   - serializer_g_init loads the JSON plugin used by
+	 *     broker_job_from_json() during state restore.
+	 * Both are idempotent if called more than once.
 	 */
+	slurm_init(NULL);
+	g_slurm_inited = true;
+
 	if (serializer_g_init(MIME_TYPE_JSON_PLUGIN, NULL)) {
 		error("broker_init: serializer_g_init(json) failed");
 		return SLURM_ERROR;
@@ -268,15 +280,38 @@ int broker_init(void)
 		error("broker_init: persist_thread_start failed");
 		return SLURM_ERROR;
 	}
+	if (proto_init() != SLURM_SUCCESS) {
+		error("broker_init: proto_init failed");
+		return SLURM_ERROR;
+	}
 
-	/* TODO M04-T2: proto_init();                                   */
+	/*
+	 * Listener brings up two listening sockets:
+	 *   - g_broker_conf.ctld_port (8442): slurm-native frame for
+	 *     ctld <-> broker traffic. Requires the slurmctld engineer's
+	 *     sister PR to register the 4 ctld<->broker msg_types in
+	 *     src/common/ before real ctld traffic flows. Until that
+	 *     lands, slurm_receive_msg() rejects unknown msg_types with
+	 *     ESLURM_PROTOCOL_INVALID_MESSAGE; broker stays alive.
+	 *   - g_broker_conf.peer_port (8443): broker private wire frame
+	 *     for broker <-> broker traffic; independent of any
+	 *     slurmctld-side change.
+	 *
+	 * Started LAST so all upstream sub-modules (broker_job table,
+	 * persist thread, proto layer) are ready to service requests the
+	 * moment the listener accepts the first connection.
+	 */
+	if (listener_start() != SLURM_SUCCESS) {
+		error("broker_init: listener_start failed");
+		return SLURM_ERROR;
+	}
+
 	/* TODO M08-T1: egress_init();                                  */
 	/* TODO M09-T1: state_machine_start();                          */
 	/* TODO M10-T1: stage_pool_start();                             */
 	/* TODO M13-T1: sync_ticker_start();                            */
-	/* TODO M05-T1: listener_start();                               */
 
-	debug("broker_init: M02/M03 ready (later sub-modules not wired yet)");
+	debug("broker_init: M02/M03/M04/M05 ready (later sub-modules not wired yet)");
 	return SLURM_SUCCESS;
 }
 
@@ -289,12 +324,20 @@ int broker_init(void)
  */
 void broker_fini(void)
 {
-	/* TODO M05-T1: listener_stop();                                */
 	/* TODO M13-T1: sync_ticker_stop();                             */
 	/* TODO M10-T1: stage_pool_stop();                              */
 	/* TODO M09-T1: state_machine_stop();                           */
 	/* TODO M08-T1: egress_fini();                                  */
-	/* TODO M04-T2: proto_fini();                                   */
+
+	/* Stop the listener FIRST so no fresh inbound RPC can land while
+	 * downstream sub-modules are tearing down. The listener thread
+	 * holds no locks across its select() boundary, so this only
+	 * costs <= 1s (the select timeout). */
+	listener_stop();
+
+	/* RPC layer drops its peer endpoint; safe after listener stop
+	 * because no inbound path can now drive an outbound proto call. */
+	proto_fini();
 
 	/* Stop the checkpoint thread first so the worker cannot race a
 	 * freed table; the thread also performs one final save during its
@@ -304,6 +347,15 @@ void broker_fini(void)
 
 	user_mapping_destroy_all();
 	broker_conf_fini();
+
+	/* Symmetric to slurm_init(NULL) in broker_init(). Released only
+	 * if init actually got that far so an early-failure path through
+	 * broker_init -> broker_fini does not poke un-initialised plugin
+	 * tables. */
+	if (g_slurm_inited) {
+		slurm_fini();
+		g_slurm_inited = false;
+	}
 
 	xfree(g_argv_opts.conf_path);
 }
