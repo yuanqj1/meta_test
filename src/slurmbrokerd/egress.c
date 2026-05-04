@@ -47,6 +47,7 @@
 #include "src/common/slurm_protocol_api.h"
 #include "src/common/slurm_protocol_defs.h"
 #include "src/common/xmalloc.h"
+#include "src/common/xstring.h"
 
 #include "broker_conf.h"
 #include "broker_job.h"

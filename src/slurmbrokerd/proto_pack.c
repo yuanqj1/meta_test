@@ -370,8 +370,10 @@ static void _pack_broker_query_status_msg(brokerd_broker_query_status_msg_t *m,
 {
 	(void) pv;
 	pack32(m->trace_id_count, buffer);
-	for (uint32_t i = 0; i < m->trace_id_count; i++)
-		packstr(m->trace_ids ? m->trace_ids[i] : NULL, buffer);
+	if (m->trace_id_count && m->trace_ids) {
+		for (uint32_t i = 0; i < m->trace_id_count; i++)
+			packstr(m->trace_ids[i], buffer);
+	}
 }
 
 static int _unpack_broker_query_status_msg(
