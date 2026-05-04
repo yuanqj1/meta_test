@@ -52,12 +52,40 @@ sbin_PROGRAMS = slurmbrokerd$(EXEEXT)
 slurmbrokerd_SOURCES = \
 	slurmbrokerd.c slurmbrokerd.h \
 	broker_conf.c broker_conf.h \
-	user_mapping.c user_mapping.h
+	user_mapping.c user_mapping.h \
+	broker_job.c broker_job.h \
+	persist.c persist.h \
+	proto.c proto.h \
+	proto_pack.c \
+	listener.c listener.h \
+	handler_ctld.c handler_ctld.h \
+	handler_remote.c handler_remote.h \
+	egress.c egress.h \
+	state_machine.c state_machine.h \
+	sync_ticker.c sync_ticker.h \
+	stage.c stage.h \
+	rewrite.c rewrite.h \
+	software.c software.h \
+	util_exec.c util_exec.h
 
 slurmbrokerd_OBJECTS = \
 	slurmbrokerd.$(OBJEXT) \
 	broker_conf.$(OBJEXT) \
-	user_mapping.$(OBJEXT)
+	user_mapping.$(OBJEXT) \
+	broker_job.$(OBJEXT) \
+	persist.$(OBJEXT) \
+	proto.$(OBJEXT) \
+	proto_pack.$(OBJEXT) \
+	listener.$(OBJEXT) \
+	handler_ctld.$(OBJEXT) \
+	handler_remote.$(OBJEXT) \
+	egress.$(OBJEXT) \
+	state_machine.$(OBJEXT) \
+	sync_ticker.$(OBJEXT) \
+	stage.$(OBJEXT) \
+	rewrite.$(OBJEXT) \
+	software.$(OBJEXT) \
+	util_exec.$(OBJEXT)
 
 slurmbrokerd_DEPENDENCIES = $(LIB_SLURM_BUILD)
 slurmbrokerd_LDFLAGS = $(CMD_LDFLAGS)
