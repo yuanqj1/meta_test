@@ -35,6 +35,21 @@ slurmbrokerd_DEPENDENCIES = $(LIB_SLURM_BUILD)
 slurmbrokerd_LDFLAGS = $(CMD_LDFLAGS)
 slurmbrokerd_LDADD = $(LIB_SLURM)
 
+# Bring-up smoke-test client. Built but NOT installed (noinst_PROGRAMS).
+# Sends one BROKERD_REQUEST_BROKER_FORWARD_JOB to a target broker peer port
+# and prints the BROKER_ACK response. Reuses proto.c / proto_pack.c so the
+# wire format always matches what slurmbrokerd itself produces.
+noinst_PROGRAMS = inject_broker_forward
+
+inject_broker_forward_SOURCES = \
+	inject_broker_forward.c \
+	proto.c proto.h \
+	proto_pack.c
+
+inject_broker_forward_DEPENDENCIES = $(LIB_SLURM_BUILD)
+inject_broker_forward_LDFLAGS = $(CMD_LDFLAGS)
+inject_broker_forward_LDADD = $(LIB_SLURM)
+
 force:
 $(slurmbrokerd_DEPENDENCIES) : force
 	@cd `dirname $@` && $(MAKE) `basename $@`
